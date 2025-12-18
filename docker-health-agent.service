@@ -1,0 +1,27 @@
+[Unit]
+Description=Docker Health Agent
+Documentation=https://github.com/your-org/docker-health-agent
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/docker-health-agent \
+    --api-url ${API_URL} \
+    --api-token ${API_TOKEN} \
+    --interval ${CHECK_INTERVAL:-30s} \
+    --report-interval ${REPORT_INTERVAL:-60s}
+
+Restart=always
+RestartSec=10
+
+# 환경변수 파일
+EnvironmentFile=/etc/docker-health-agent/env
+
+# 로깅
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=docker-health-agent
+
+[Install]
+WantedBy=multi-user.target
