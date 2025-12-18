@@ -7,7 +7,7 @@ import (
 
 	"docker-health-agent/internal/types"
 
-	"github.com/docker/docker/api/types/container"
+	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
 )
 
@@ -41,7 +41,7 @@ func (d *Discovery) Ping(ctx context.Context) error {
 
 // Discover 실행 중인 컨테이너 조회
 func (d *Discovery) Discover(ctx context.Context) ([]types.ContainerInfo, error) {
-	containers, err := d.client.ContainerList(ctx, container.ListOptions{
+	containers, err := d.client.ContainerList(ctx, dockertypes.ContainerListOptions{
 		All: false, // running only
 	})
 	if err != nil {
@@ -97,7 +97,7 @@ func cleanName(names []string) string {
 	return strings.TrimPrefix(names[0], "/")
 }
 
-func extractPorts(ports []container.Port) []types.PortMapping {
+func extractPorts(ports []dockertypes.Port) []types.PortMapping {
 	var result []types.PortMapping
 	for _, p := range ports {
 		result = append(result, types.PortMapping{
@@ -110,7 +110,7 @@ func extractPorts(ports []container.Port) []types.PortMapping {
 	return result
 }
 
-func extractNetworks(settings *container.NetworkSettings) []types.NetworkInfo {
+func extractNetworks(settings *dockertypes.NetworkSettings) []types.NetworkInfo {
 	if settings == nil {
 		return nil
 	}
