@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e
 
-# Docker Health Agent 설치 스크립트
-# 사용법: curl -sSL https://raw.githubusercontent.com/LodongDev/health-agent/main/install.sh | bash
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'
@@ -13,18 +10,16 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 echo ""
 echo "=================================="
-echo " Docker Health Agent 설치"
+echo " Health Agent 설치"
 echo "=================================="
 echo ""
 
-# root 권한 확인
 if [ "$EUID" -ne 0 ]; then
     SUDO="sudo"
 else
     SUDO=""
 fi
 
-# OS 확인
 if [ -f /etc/redhat-release ]; then
     OS="rhel"
 elif [ -f /etc/debian_version ]; then
@@ -38,7 +33,7 @@ if [ "$OS" = "rhel" ]; then
     $SUDO curl -sSL -o /etc/yum.repos.d/health-agent.repo https://lodongdev.github.io/health-agent/health-agent.repo
 
     info "패키지 설치 중..."
-    $SUDO yum install -y docker-health-agent
+    $SUDO yum install -y health-agent
 
 elif [ "$OS" = "debian" ]; then
     info "바이너리 다운로드 중..."
@@ -55,23 +50,22 @@ elif [ "$OS" = "debian" ]; then
 
     TMP_DIR=$(mktemp -d)
     cd "$TMP_DIR"
-    curl -sSLO "https://github.com/LodongDev/health-agent/releases/download/${VERSION}/docker-health-agent_${VERSION_NUM}_linux_${ARCH}.tar.gz"
-    tar -xzf "docker-health-agent_${VERSION_NUM}_linux_${ARCH}.tar.gz"
-    $SUDO mv docker-health-agent /usr/local/bin/
-    $SUDO chmod +x /usr/local/bin/docker-health-agent
+    curl -sSLO "https://github.com/LodongDev/health-agent/releases/download/${VERSION}/health-agent_${VERSION_NUM}_linux_${ARCH}.tar.gz"
+    tar -xzf "health-agent_${VERSION_NUM}_linux_${ARCH}.tar.gz"
+    $SUDO mv health-agent /usr/local/bin/
+    $SUDO chmod +x /usr/local/bin/health-agent
     rm -rf "$TMP_DIR"
 fi
 
-# 설치 확인 (절대 경로 사용 - 쉘 캐시 문제 방지)
-if [ -x /usr/local/bin/docker-health-agent ]; then
+if [ -x /usr/local/bin/health-agent ]; then
     hash -r 2>/dev/null || true
     echo ""
     info "설치 완료!"
-    /usr/local/bin/docker-health-agent version
+    /usr/local/bin/health-agent version
     echo ""
     echo "사용법:"
-    echo "  1. 로그인:  docker-health-agent login"
-    echo "  2. 실행:    docker-health-agent run --api-url http://your-server/api"
+    echo "  1. 로그인:  health-agent login"
+    echo "  2. 실행:    health-agent docker"
     echo ""
 else
     error "설치 실패"

@@ -20,7 +20,7 @@ func getTokenDir() string {
 		homeDir = os.Getenv("HOME")
 	}
 
-	return filepath.Join(homeDir, ".docker-health-agent")
+	return filepath.Join(homeDir, ".health-agent")
 }
 
 // getTokenPath 토큰 파일 전체 경로
@@ -55,7 +55,7 @@ func LoadToken() (*TokenData, error) {
 	data, err := os.ReadFile(tokenPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("로그인이 필요합니다. 'docker-health-agent login' 실행")
+			return nil, fmt.Errorf("로그인이 필요합니다. 'health-agent login' 실행")
 		}
 		return nil, fmt.Errorf("토큰 파일 읽기 실패: %w", err)
 	}

@@ -1,4 +1,4 @@
-module docker-health-agent
+module health-agent
 
 go 1.21
 
@@ -6,6 +6,7 @@ require (
 	github.com/docker/docker v24.0.7+incompatible
 	github.com/docker/go-connections v0.4.0
 	github.com/google/uuid v1.5.0
+	github.com/gorilla/websocket v1.5.1
 	golang.org/x/term v0.10.0
 )
 
@@ -20,6 +21,7 @@ require (
 	github.com/opencontainers/image-spec v1.0.2 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	golang.org/x/mod v0.11.0 // indirect
+	golang.org/x/net v0.17.0 // indirect
 	golang.org/x/sys v0.10.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	golang.org/x/tools v0.10.0 // indirect

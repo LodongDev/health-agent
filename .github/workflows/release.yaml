@@ -37,8 +37,8 @@ jobs:
 
           go mod tidy
 
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/docker-health-agent_linux_amd64 ./cmd/agent
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/docker-health-agent_linux_arm64 ./cmd/agent
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/health-agent_linux_amd64 ./cmd/agent
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/health-agent_linux_arm64 ./cmd/agent
 
       - name: Create packages
         run: |
@@ -46,7 +46,7 @@ jobs:
 
           # amd64 RPM
           cat > nfpm-amd64.yaml << EOF
-          name: docker-health-agent
+          name: health-agent
           arch: x86_64
           platform: linux
           version: ${VERSION}
@@ -56,8 +56,8 @@ jobs:
           homepage: https://github.com/LodongDev/health-agent
           license: MIT
           contents:
-            - src: dist/docker-health-agent_linux_amd64
-              dst: /usr/local/bin/docker-health-agent
+            - src: dist/health-agent_linux_amd64
+              dst: /usr/local/bin/health-agent
               file_info:
                 mode: 0755
           EOF
@@ -65,7 +65,7 @@ jobs:
 
           # arm64 RPM
           cat > nfpm-arm64.yaml << EOF
-          name: docker-health-agent
+          name: health-agent
           arch: aarch64
           platform: linux
           version: ${VERSION}
@@ -75,16 +75,14 @@ jobs:
           homepage: https://github.com/LodongDev/health-agent
           license: MIT
           contents:
-            - src: dist/docker-health-agent_linux_arm64
-              dst: /usr/local/bin/docker-health-agent
+            - src: dist/health-agent_linux_arm64
+              dst: /usr/local/bin/health-agent
               file_info:
                 mode: 0755
           EOF
           nfpm pkg --packager rpm --config nfpm-arm64.yaml --target dist/
 
-          # tar.gz
-          cd dist
-          cp docker-health-agent_linux_amd64 docker-health-agent && tar -czvf docker-health-agent_${VERSION}_linux_amd64.tar.gz docker-health-agent && rm docker-health-agent
+          # tarealth-agent_linux_amd64 docker-health-agent && tar -czvf docker-health-agent_${VERSION}_linux_amd64.tar.gz docker-health-agent && rm docker-health-agent
           cp docker-health-agent_linux_arm64 docker-health-agent && tar -czvf docker-health-agent_${VERSION}_linux_arm64.tar.gz docker-health-agent && rm docker-health-agent
 
       - name: Create YUM repository
@@ -115,7 +113,7 @@ jobs:
           sudo curl -o /etc/yum.repos.d/health-agent.repo https://lodongdev.github.io/health-agent/health-agent.repo
 
           # Install
-          sudo yum install docker-health-agent
+          sudo yum install health-agent
           </pre>
           <p><a href="https://github.com/LodongDev/health-agent">GitHub Repository</a></p>
           </body>

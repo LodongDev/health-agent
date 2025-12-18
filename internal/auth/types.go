@@ -45,6 +45,7 @@ type MemberResponse struct {
 	UUID       string `json:"uuid"`
 	Email      string `json:"email"`
 	Name       string `json:"name"`
+	Department string `json:"department"`
 	MemberType string `json:"memberType"`
 	Role       string `json:"role"`
 	Status     string `json:"status"`
