@@ -7,9 +7,11 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
-  goreleaser:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -22,11 +24,113 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+      - name: Install tools
+        run: |
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
+          sudo apt update
+          sudo apt install -y nfpm createrepo-c
+
+      - name: Build binaries
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          mkdir -p dist
+
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/docker-health-agent_linux_amd64 ./cmd/agent
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/docker-health-agent_linux_arm64 ./cmd/agent
+
+      - name: Create packages
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+
+          # amd64 RPM
+          cat > nfpm-amd64.yaml << EOF
+          name: docker-health-agent
+          arch: x86_64
+          platform: linux
+          version: ${VERSION}
+          maintainer: LodongDev <dev@lodong.com>
+          description: Docker container health monitoring agent
+          vendor: LodongDev
+          homepage: https://github.com/LodongDev/health-agent
+          license: MIT
+          contents:
+            - src: dist/docker-health-agent_linux_amd64
+              dst: /usr/local/bin/docker-health-agent
+              file_info:
+                mode: 0755
+          EOF
+          nfpm pkg --packager rpm --config nfpm-amd64.yaml --target dist/
+
+          # arm64 RPM
+          cat > nfpm-arm64.yaml << EOF
+          name: docker-health-agent
+          arch: aarch64
+          platform: linux
+          version: ${VERSION}
+          maintainer: LodongDev <dev@lodong.com>
+          description: Docker container health monitoring agent
+          vendor: LodongDev
+          homepage: https://github.com/LodongDev/health-agent
+          license: MIT
+          contents:
+            - src: dist/docker-health-agent_linux_arm64
+              dst: /usr/local/bin/docker-health-agent
+              file_info:
+                mode: 0755
+          EOF
+          nfpm pkg --packager rpm --config nfpm-arm64.yaml --target dist/
+
+          # tar.gz
+          cd dist
+          cp docker-health-agent_linux_amd64 docker-health-agent && tar -czvf docker-health-agent_${VERSION}_linux_amd64.tar.gz docker-health-agent && rm docker-health-agent
+          cp docker-health-agent_linux_arm64 docker-health-agent && tar -czvf docker-health-agent_${VERSION}_linux_arm64.tar.gz docker-health-agent && rm docker-health-agent
+
+      - name: Create YUM repository
+        run: |
+          mkdir -p yum-repo/rpm
+          cp dist/*.rpm yum-repo/rpm/
+          createrepo_c yum-repo/rpm/
+
+          # repo 파일 생성
+          cat > yum-repo/health-agent.repo << 'EOF'
+          [health-agent]
+          name=Docker Health Agent Repository
+          baseurl=https://lodongdev.github.io/health-agent/rpm
+          enabled=1
+          gpgcheck=0
+          EOF
+
+          # index.html
+          cat > yum-repo/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head><title>Docker Health Agent Repository</title></head>
+          <body>
+          <h1>Docker Health Agent YUM Repository</h1>
+          <h2>Installation</h2>
+          <pre>
+          # Add repository
+          sudo curl -o /etc/yum.repos.d/health-agent.repo https://lodongdev.github.io/health-agent/health-agent.repo
+
+          # Install
+          sudo yum install docker-health-agent
+          </pre>
+          <p><a href="https://github.com/LodongDev/health-agent">GitHub Repository</a></p>
+          </body>
+          </html>
+          EOF
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          version: latest
-          args: release --clean
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./yum-repo
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.rpm
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_OWNER: ${{ github.repository_owner }}
