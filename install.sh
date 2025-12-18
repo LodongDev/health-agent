@@ -62,11 +62,12 @@ elif [ "$OS" = "debian" ]; then
     rm -rf "$TMP_DIR"
 fi
 
-# 설치 확인
-if command -v docker-health-agent &> /dev/null; then
+# 설치 확인 (절대 경로 사용 - 쉘 캐시 문제 방지)
+if [ -x /usr/local/bin/docker-health-agent ]; then
+    hash -r 2>/dev/null || true
     echo ""
     info "설치 완료!"
-    docker-health-agent version
+    /usr/local/bin/docker-health-agent version
     echo ""
     echo "사용법:"
     echo "  1. 로그인:  docker-health-agent login"
