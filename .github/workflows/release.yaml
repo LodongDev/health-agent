@@ -35,6 +35,8 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/v}
           mkdir -p dist
 
+          go mod tidy
+
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/docker-health-agent_linux_amd64 ./cmd/agent
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o dist/docker-health-agent_linux_arm64 ./cmd/agent
 
