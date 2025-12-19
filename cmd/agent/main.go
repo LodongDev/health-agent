@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log"
@@ -11,17 +10,14 @@ import (
 	"syscall"
 	"time"
 
-	"health-agent/internal/auth"
 	"health-agent/internal/config"
 	"health-agent/internal/docker"
 	"health-agent/internal/oscheck"
 	"health-agent/internal/types"
 	"health-agent/internal/wsclient"
-
-	"golang.org/x/term"
 )
 
-const version = "1.1.0"
+const version = "1.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -30,12 +26,10 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "login":
-		cmdLogin()
-	case "logout":
-		cmdLogout()
-	case "whoami":
-		cmdWhoami()
+	case "config":
+		cmdConfig()
+	case "status":
+		cmdStatus()
 	case "docker":
 		cmdDocker()
 	case "lxd":
@@ -58,9 +52,11 @@ func printUsage() {
 	fmt.Println("  health-agent <command>")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  login     로그인")
-	fmt.Println("  logout    로그아웃")
-	fmt.Println("  whoami    현재 로그인 상태")
+	fmt.Println("  config    API 키 설정")
+	fmt.Println("            --api-key <key>  API 키 설정")
+	fmt.Println("            --show           현재 설정 표시")
+	fmt.Println()
+	fmt.Println("  status    현재 설정 상태")
 	fmt.Println()
 	fmt.Println("  docker    Docker 컨테이너 + OS 서비스 모니터링")
 	fmt.Println("  lxd       LXD 컨테이너 + OS 서비스 모니터링 (예정)")
@@ -69,90 +65,77 @@ func printUsage() {
 	fmt.Println("  help      도움말")
 	fmt.Println()
 	fmt.Println("예시:")
-	fmt.Println("  health-agent login")
+	fmt.Println("  health-agent config --api-key ldk_xxxxx")
 	fmt.Println("  health-agent docker")
 	fmt.Println("  health-agent docker --once")
 }
 
-func cmdLogin() {
-	reader := bufio.NewReader(os.Stdin)
-
-	fmt.Print("Email: ")
-	email, _ := reader.ReadString('\n')
-	email = strings.TrimSpace(email)
-
-	fmt.Print("Password: ")
-	passwordBytes, err := term.ReadPassword(int(syscall.Stdin))
-	if err != nil {
-		password, _ := reader.ReadString('\n')
-		passwordBytes = []byte(strings.TrimSpace(password))
-	}
-	fmt.Println()
-
-	password := string(passwordBytes)
-
-	if email == "" || password == "" {
-		fmt.Fprintln(os.Stderr, "이메일과 비밀번호를 입력하세요")
-		os.Exit(1)
-	}
-
-	authClient := auth.NewClient(config.AuthURL)
-	token, err := authClient.Login(email, password)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "로그인 실패: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := auth.SaveToken(token); err != nil {
-		fmt.Fprintf(os.Stderr, "토큰 저장 실패: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("[INFO] 로그인 성공 (%s)\n", email)
-}
-
-func cmdLogout() {
-	if !auth.TokenExists() {
-		fmt.Println("이미 로그아웃 상태입니다")
+func cmdConfig() {
+	if len(os.Args) < 3 {
+		// 현재 설정 표시
+		cmdStatus()
 		return
 	}
 
-	if err := auth.DeleteToken(); err != nil {
-		fmt.Fprintf(os.Stderr, "로그아웃 실패: %v\n", err)
-		os.Exit(1)
-	}
+	for i := 2; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--api-key":
+			if i+1 >= len(os.Args) {
+				fmt.Fprintln(os.Stderr, "API 키를 입력하세요")
+				os.Exit(1)
+			}
+			apiKey := os.Args[i+1]
+			if apiKey == "" || !strings.HasPrefix(apiKey, "ldk_") {
+				fmt.Fprintln(os.Stderr, "올바른 API 키 형식이 아닙니다 (ldk_로 시작해야 함)")
+				os.Exit(1)
+			}
 
-	fmt.Println("[INFO] 로그아웃 완료")
+			cfg := &config.AgentConfig{APIKey: apiKey}
+			if err := config.SaveConfig(cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "설정 저장 실패: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("[INFO] API 키가 설정되었습니다\n")
+			fmt.Printf("       키: %s****\n", apiKey[:12])
+			return
+
+		case "--show":
+			cmdStatus()
+			return
+		}
+	}
 }
 
-func cmdWhoami() {
-	token, err := auth.EnsureValidToken(config.AuthURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+func cmdStatus() {
+	if !config.ConfigExists() {
+		fmt.Println("상태: 미설정")
+		fmt.Println("API 키가 설정되지 않았습니다.")
+		fmt.Println("'health-agent config --api-key <key>' 명령으로 설정하세요.")
+		return
 	}
 
-	authClient := auth.NewClient(config.AuthURL)
-	user, err := authClient.GetMe(token.AccessToken)
+	cfg, err := config.LoadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "사용자 정보 조회 실패: %v\n", err)
-		os.Exit(1)
+		fmt.Printf("상태: 오류\n%v\n", err)
+		return
 	}
 
-	fmt.Printf("로그인: %s (%s)\n", user.Email, user.Name)
-	fmt.Printf("부서: %s\n", user.Department)
-	fmt.Printf("토큰 만료: %s\n", token.ExpiresAt.Format("2006-01-02 15:04:05"))
+	fmt.Println("상태: 설정됨")
+	if len(cfg.APIKey) > 12 {
+		fmt.Printf("API 키: %s****\n", cfg.APIKey[:12])
+	}
+	fmt.Printf("Agent ID: %s\n", config.LoadOrCreateAgentID())
+	fmt.Printf("서버: %s\n", config.MonitoringAPIURL)
 }
 
 func cmdDocker() {
-	// 1. 인증 확인
-	token, err := auth.EnsureValidToken(config.AuthURL)
+	// 1. API 키 확인
+	apiKey, err := config.GetAPIKey()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
-		fmt.Fprintln(os.Stderr, "먼저 'health-agent login' 명령으로 로그인하세요")
 		os.Exit(1)
 	}
-	fmt.Printf("[INFO] 인증 확인 (%s)\n", token.Email)
+	fmt.Printf("[INFO] API 키 확인됨 (%s****)\n", apiKey[:12])
 
 	// 2. 옵션 파싱
 	once := false
@@ -163,7 +146,7 @@ func cmdDocker() {
 	}
 
 	// 3. 에이전트 실행
-	agent := NewAgent(token)
+	agent := NewAgent(apiKey)
 	agent.Run(once)
 }
 
@@ -173,7 +156,7 @@ func cmdLxd() {
 }
 
 type Agent struct {
-	token       *auth.TokenData
+	apiKey      string
 	wsClient    *wsclient.Client
 	osChecker   *oscheck.Checker
 	dockerCheck *docker.Checker
@@ -182,12 +165,12 @@ type Agent struct {
 	states      map[string]*types.ServiceState
 }
 
-func NewAgent(token *auth.TokenData) *Agent {
+func NewAgent(apiKey string) *Agent {
 	hostname, _ := os.Hostname()
 	agentID := config.LoadOrCreateAgentID()
 
 	return &Agent{
-		token:       token,
+		apiKey:      apiKey,
 		osChecker:   oscheck.New(),
 		dockerCheck: docker.New(),
 		hostname:    hostname,
@@ -206,9 +189,9 @@ func (a *Agent) Run(once bool) {
 
 	a.printBanner()
 
-	// WebSocket 연결
+	// WebSocket 연결 (API 키 사용)
 	var err error
-	a.wsClient, err = wsclient.New(config.WebSocketURL, a.token.AccessToken)
+	a.wsClient, err = wsclient.New(config.WebSocketURL, a.apiKey)
 	if err != nil {
 		log.Fatalf("[ERROR] WebSocket 연결 실패: %v", err)
 	}

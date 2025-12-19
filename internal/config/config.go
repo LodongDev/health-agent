@@ -1,9 +1,12 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"runtime"
 
 	"github.com/google/uuid"
 )
@@ -15,16 +18,91 @@ const (
 	WebSocketURL     = "ws://172.27.50.181:8080/ws/monitoring"
 )
 
+// AgentConfig 에이전트 설정
+type AgentConfig struct {
+	APIKey string `json:"apiKey"`
+	Name   string `json:"name,omitempty"`
+}
+
+// getConfigDir 설정 디렉토리 경로
+func getConfigDir() string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(os.Getenv("USERPROFILE"), ".health-agent")
+	}
+	return "/etc/health-agent"
+}
+
+// getConfigPath 설정 파일 경로
+func getConfigPath() string {
+	return filepath.Join(getConfigDir(), "config.json")
+}
+
+// SaveConfig 설정 저장
+func SaveConfig(cfg *AgentConfig) error {
+	dir := getConfigDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("디렉토리 생성 실패: %w", err)
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("JSON 변환 실패: %w", err)
+	}
+
+	if err := os.WriteFile(getConfigPath(), data, 0600); err != nil {
+		return fmt.Errorf("파일 저장 실패: %w", err)
+	}
+
+	return nil
+}
+
+// LoadConfig 설정 로드
+func LoadConfig() (*AgentConfig, error) {
+	data, err := os.ReadFile(getConfigPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("API 키가 설정되지 않았습니다. 'health-agent config --api-key <key>' 실행")
+		}
+		return nil, fmt.Errorf("설정 파일 읽기 실패: %w", err)
+	}
+
+	var cfg AgentConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("설정 파싱 실패: %w", err)
+	}
+
+	if cfg.APIKey == "" {
+		return nil, fmt.Errorf("API 키가 설정되지 않았습니다")
+	}
+
+	return &cfg, nil
+}
+
+// GetAPIKey API 키 조회
+func GetAPIKey() (string, error) {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return "", err
+	}
+	return cfg.APIKey, nil
+}
+
+// ConfigExists 설정 파일 존재 여부
+func ConfigExists() bool {
+	_, err := os.Stat(getConfigPath())
+	return err == nil
+}
+
 // LoadOrCreateAgentID 에이전트 ID 로드 또는 생성
 func LoadOrCreateAgentID() string {
-	idFile := "/etc/health-agent/agent-id"
+	idFile := filepath.Join(getConfigDir(), "agent-id")
 	if data, err := os.ReadFile(idFile); err == nil {
 		return string(data)
 	}
 
 	id := fmt.Sprintf("agent-%s", uuid.New().String()[:8])
 
-	os.MkdirAll("/etc/health-agent", 0755)
+	os.MkdirAll(getConfigDir(), 0755)
 	os.WriteFile(idFile, []byte(id), 0644)
 
 	return id

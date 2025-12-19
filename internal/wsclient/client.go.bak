@@ -15,14 +15,14 @@ import (
 type Client struct {
 	conn   *websocket.Conn
 	url    string
-	apiKey string
+	token  string
 	mu     sync.Mutex
 	closed bool
 }
 
-func New(url, apiKey string) (*Client, error) {
+func New(url, token string) (*Client, error) {
 	header := http.Header{}
-	header.Set("X-API-Key", apiKey)
+	header.Set("Authorization", "Bearer "+token)
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
@@ -34,9 +34,9 @@ func New(url, apiKey string) (*Client, error) {
 	}
 
 	client := &Client{
-		conn:   conn,
+		conn:  conn,
 		url:   url,
-		apiKey: apiKey,
+		token: token,
 	}
 
 	// 연결 유지를 위한 ping
