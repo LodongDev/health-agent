@@ -12,7 +12,6 @@ import (
 	"health-agent/internal/types"
 
 	dockertypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
@@ -45,7 +44,7 @@ func (c *Checker) CheckAll(ctx context.Context) ([]types.ServiceState, error) {
 		return nil, fmt.Errorf("Docker 클라이언트 없음")
 	}
 
-	containers, err := c.client.ContainerList(ctx, container.ListOptions{All: false})
+    containers, err := c.client.ContainerList(ctx, dockertypes.ContainerListOptions{All: false})
 	if err != nil {
 		return nil, err
 	}
