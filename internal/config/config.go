@@ -108,19 +108,45 @@ func LoadOrCreateAgentID() string {
 	return id
 }
 
-// GetLocalIP 로컬 IP 조회
+// GetLocalIP 로컬 IP 조회 (기본 게이트웨이로 나가는 IP)
 func GetLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
+	// 방법 1: 외부로 연결 시도하여 사용되는 IP 확인
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err == nil {
+		defer conn.Close()
+		localAddr := conn.LocalAddr().(*net.UDPAddr)
+		return localAddr.IP.String()
+	}
+
+	// 방법 2: 인터페이스 순회 (docker, veth 제외)
+	interfaces, err := net.Interfaces()
 	if err != nil {
 		return "127.0.0.1"
 	}
 
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
+	for _, iface := range interfaces {
+		// docker, veth, br- 등 가상 인터페이스 제외
+		name := iface.Name
+		if name == "lo" || name == "docker0" ||
+			len(name) > 2 && name[:3] == "br-" ||
+			len(name) > 3 && name[:4] == "veth" ||
+			len(name) > 5 && name[:6] == "virbr" {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					return ipnet.IP.String()
+				}
 			}
 		}
 	}
+
 	return "127.0.0.1"
 }

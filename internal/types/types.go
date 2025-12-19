@@ -47,6 +47,7 @@ type ServiceState struct {
 type AgentReport struct {
 	AgentID   string         `json:"agentId"`
 	Hostname  string         `json:"hostname"`
+	IP        string         `json:"ip"`
 	Timestamp time.Time      `json:"timestamp"`
 	Services  []ServiceState `json:"services"`
 }

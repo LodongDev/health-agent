@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -21,10 +22,24 @@ type Checker struct {
 }
 
 func New() *Checker {
-	cli, err := client.NewClientWithOpts(
-		client.WithHost("unix:///var/run/docker.sock"),
-		client.WithAPIVersionNegotiation(),
-	)
+	// OS에 따라 Docker 소켓 경로 결정
+	var cli *client.Client
+	var err error
+
+	if runtime.GOOS == "windows" {
+		// Windows: named pipe 사용
+		cli, err = client.NewClientWithOpts(
+			client.WithHost("npipe:////./pipe/docker_engine"),
+			client.WithAPIVersionNegotiation(),
+		)
+	} else {
+		// Linux/Mac: Unix socket 사용
+		cli, err = client.NewClientWithOpts(
+			client.WithHost("unix:///var/run/docker.sock"),
+			client.WithAPIVersionNegotiation(),
+		)
+	}
+
 	if err != nil {
 		return &Checker{timeout: 5 * time.Second}
 	}
