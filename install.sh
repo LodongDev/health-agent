@@ -28,26 +28,30 @@ else
     error "지원하지 않는 OS입니다 (RHEL/CentOS/Debian/Ubuntu만 지원)"
 fi
 
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64|amd64) ARCH="amd64"; RPM_ARCH="x86_64" ;;
+    aarch64|arm64) ARCH="arm64"; RPM_ARCH="aarch64" ;;
+    *) error "지원하지 않는 아키텍처: $ARCH" ;;
+esac
+
+VERSION=$(curl -sSL "https://api.github.com/repos/LodongDev/health-agent/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+VERSION_NUM="${VERSION#v}"
+
+info "버전: $VERSION ($ARCH)"
+
 if [ "$OS" = "rhel" ]; then
-    info "YUM 레포 등록 중..."
-    $SUDO curl -sSL -o /etc/yum.repos.d/health-agent.repo https://lodongdev.github.io/health-agent/health-agent.repo
+    info "RPM 패키지 다운로드 중..."
+    TMP_DIR=$(mktemp -d)
+    cd "$TMP_DIR"
+    curl -sSLO "https://github.com/LodongDev/health-agent/releases/download/${VERSION}/health-agent-${VERSION_NUM}-1.${RPM_ARCH}.rpm"
 
     info "패키지 설치 중..."
-    $SUDO yum install -y health-agent
+    $SUDO rpm -Uvh --force "health-agent-${VERSION_NUM}-1.${RPM_ARCH}.rpm"
+    rm -rf "$TMP_DIR"
 
 elif [ "$OS" = "debian" ]; then
     info "바이너리 다운로드 중..."
-
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64|amd64) ARCH="amd64" ;;
-        aarch64|arm64) ARCH="arm64" ;;
-        *) error "지원하지 않는 아키텍처: $ARCH" ;;
-    esac
-
-    VERSION=$(curl -sSL "https://api.github.com/repos/LodongDev/health-agent/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
-    VERSION_NUM="${VERSION#v}"
-
     TMP_DIR=$(mktemp -d)
     cd "$TMP_DIR"
     curl -sSLO "https://github.com/LodongDev/health-agent/releases/download/${VERSION}/health-agent_${VERSION_NUM}_linux_${ARCH}.tar.gz"
