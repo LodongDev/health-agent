@@ -19,7 +19,7 @@ import (
 	"health-agent/internal/wsclient"
 )
 
-const version = "1.3.0"
+const version = "1.8.0"
 
 const serviceFile = `[Unit]
 Description=Health Agent - Service Health Check Agent
@@ -28,7 +28,7 @@ Wants=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/health-agent docker --foreground
+ExecStart=/usr/bin/health-agent docker --foreground
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -253,13 +253,13 @@ func installAndStartService() error {
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	if execPath != "/usr/local/bin/health-agent" {
-		fmt.Println("[INFO] Copying binary to /usr/local/bin/health-agent...")
+	if execPath != "/usr/bin/health-agent" {
+		fmt.Println("[INFO] Copying binary to /usr/bin/health-agent...")
 		input, err := os.ReadFile(execPath)
 		if err != nil {
 			return fmt.Errorf("failed to read binary: %w", err)
 		}
-		if err := os.WriteFile("/usr/local/bin/health-agent", input, 0755); err != nil {
+		if err := os.WriteFile("/usr/bin/health-agent", input, 0755); err != nil {
 			return fmt.Errorf("failed to copy binary: %w", err)
 		}
 	}
@@ -335,7 +335,7 @@ func cmdUninstallService() {
 	exec.Command("systemctl", "daemon-reload").Run()
 
 	fmt.Println("[INFO] Service uninstalled successfully")
-	fmt.Println("[INFO] Binary at /usr/local/bin/health-agent was not removed")
+	fmt.Println("[INFO] Binary at /usr/bin/health-agent was not removed")
 }
 
 type Agent struct {
