@@ -215,109 +215,136 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 	return types.TypeDocker
 }
 
-// detectTypeByFileStructure 컨테이너 내부 파일 구조를 확인하여 타입 판별
+// detectTypeByFileStructure 컨테이너 내부 파일 구조를 확인하여 타입 판별 (최적화: 단일 명령)
 func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceType {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	log.Printf("[DEBUG] detectTypeByFileStructure: checking container %s", containerID[:12])
+	// 단일 명령으로 여러 파일 존재 여부를 한번에 확인
+	files := c.checkFilesInContainer(ctx, containerID)
+	if files == nil {
+		return types.TypeDocker
+	}
 
-	// 1. Web Server 확인 (Nginx, Apache/httpd)
-	if c.fileExistsInContainer(ctx, containerID, "/etc/nginx/nginx.conf") {
-		log.Printf("[DEBUG] %s: found nginx.conf", containerID[:12])
+	// 1. Web Server 확인
+	if files["nginx"] {
+		log.Printf("[DEBUG] %s: found nginx", containerID[:12])
 		return types.TypeWebNginx
 	}
-	if c.fileExistsInContainer(ctx, containerID, "/etc/apache2/apache2.conf") ||
-		c.fileExistsInContainer(ctx, containerID, "/etc/httpd/conf/httpd.conf") ||
-		c.fileExistsInContainer(ctx, containerID, "/usr/local/apache2/conf/httpd.conf") {
+	if files["apache"] {
+		log.Printf("[DEBUG] %s: found apache", containerID[:12])
 		return types.TypeWebApache
 	}
 
-	// 2. Next.js / React / Vite 확인 → WEB
-	// Next.js
-	if c.fileExistsInContainer(ctx, containerID, "/app/next.config.js") ||
-		c.fileExistsInContainer(ctx, containerID, "/app/next.config.mjs") ||
-		c.fileExistsInContainer(ctx, containerID, "/app/.next/BUILD_ID") ||
-		c.dirExistsInContainer(ctx, containerID, "/app/.next") {
+	// 2. Next.js
+	if files["nextjs"] {
 		log.Printf("[DEBUG] %s: found Next.js", containerID[:12])
 		return types.TypeWeb
 	}
-	// Vite (React/Vue/Svelte)
-	if c.fileExistsInContainer(ctx, containerID, "/app/vite.config.ts") ||
-		c.fileExistsInContainer(ctx, containerID, "/app/vite.config.js") ||
-		c.fileExistsInContainer(ctx, containerID, "/vite.config.ts") ||
-		c.fileExistsInContainer(ctx, containerID, "/vite.config.js") {
+
+	// 3. Vite
+	if files["vite"] {
 		log.Printf("[DEBUG] %s: found Vite", containerID[:12])
 		return types.TypeWeb
 	}
-	// Vite build output (dist 폴더)
-	if c.fileExistsInContainer(ctx, containerID, "/app/dist/index.html") ||
-		c.fileExistsInContainer(ctx, containerID, "/dist/index.html") {
-		log.Printf("[DEBUG] %s: found Vite dist", containerID[:12])
-		return types.TypeWeb
-	}
-	// React (Create React App - build 폴더)
-	if c.fileExistsInContainer(ctx, containerID, "/app/build/index.html") ||
-		c.fileExistsInContainer(ctx, containerID, "/build/index.html") {
+
+	// 4. React (build/dist)
+	if files["react_build"] {
 		log.Printf("[DEBUG] %s: found React build", containerID[:12])
 		return types.TypeWeb
 	}
-	// React (개발 모드 - src/main.tsx, src/index.tsx, src/App.tsx)
-	if (c.fileExistsInContainer(ctx, containerID, "/app/src/main.tsx") ||
-		c.fileExistsInContainer(ctx, containerID, "/app/src/main.jsx") ||
-		c.fileExistsInContainer(ctx, containerID, "/app/src/index.tsx") ||
-		c.fileExistsInContainer(ctx, containerID, "/app/src/App.tsx") ||
-		c.fileExistsInContainer(ctx, containerID, "/app/src/index.js") ||
-		c.fileExistsInContainer(ctx, containerID, "/app/src/App.js")) &&
-		c.fileExistsInContainer(ctx, containerID, "/app/package.json") {
+
+	// 5. React/Vite src
+	if files["react_src"] && files["package_json"] {
 		log.Printf("[DEBUG] %s: found React/Vite src", containerID[:12])
 		return types.TypeWeb
 	}
 
-	// 3. Java/Spring 확인 → API_JAVA
-	if c.fileExistsInContainer(ctx, containerID, "/app/pom.xml") ||
-		c.fileExistsInContainer(ctx, containerID, "/pom.xml") ||
-		c.fileExistsInContainer(ctx, containerID, "/app/build.gradle") ||
-		c.fileExistsInContainer(ctx, containerID, "/build.gradle") ||
-		c.dirExistsInContainer(ctx, containerID, "/app/BOOT-INF") ||
-		c.dirExistsInContainer(ctx, containerID, "/BOOT-INF") ||
-		c.hasJarFiles(ctx, containerID, "/app") {
+	// 6. Java/Spring
+	if files["java"] {
 		log.Printf("[DEBUG] %s: found Java/Spring", containerID[:12])
 		return types.TypeAPIJava
 	}
 
-	// 4. Go 확인 → API_GO
-	if c.fileExistsInContainer(ctx, containerID, "/app/go.mod") ||
-		c.fileExistsInContainer(ctx, containerID, "/go.mod") {
+	// 7. Go
+	if files["golang"] {
+		log.Printf("[DEBUG] %s: found Go", containerID[:12])
 		return types.TypeAPIGo
 	}
 
-	// 5. Python 확인 - API vs MODULE 구분
-	hasPython := c.fileExistsInContainer(ctx, containerID, "/app/requirements.txt") ||
-		c.fileExistsInContainer(ctx, containerID, "/requirements.txt") ||
-		c.fileExistsInContainer(ctx, containerID, "/app/pyproject.toml") ||
-		c.fileExistsInContainer(ctx, containerID, "/pyproject.toml")
-
-	if hasPython {
-		// FastAPI, Flask, Django가 있으면 API
-		if c.fileExistsInContainer(ctx, containerID, "/app/main.py") &&
-			(c.fileContains(ctx, containerID, "/app/main.py", "fastapi") ||
-				c.fileContains(ctx, containerID, "/app/main.py", "flask") ||
-				c.fileContains(ctx, containerID, "/app/main.py", "django")) {
+	// 8. Python
+	if files["python"] {
+		if files["python_api"] {
+			log.Printf("[DEBUG] %s: found Python API", containerID[:12])
 			return types.TypeAPIPython
 		}
-		// 그 외 Python (AI/ML 등) → MODULE
+		log.Printf("[DEBUG] %s: found Python MODULE", containerID[:12])
 		return types.TypeModule
 	}
 
-	// 6. Node.js 확인 (package.json)
-	if c.fileExistsInContainer(ctx, containerID, "/app/package.json") ||
-		c.fileExistsInContainer(ctx, containerID, "/package.json") {
-		// package.json이 있지만 Next.js가 아니면 일반 Node API
+	// 9. Node.js (package.json만 있는 경우)
+	if files["package_json"] {
+		log.Printf("[DEBUG] %s: found package.json only -> API_NODE", containerID[:12])
 		return types.TypeAPINode
 	}
 
 	return types.TypeDocker
+}
+
+// checkFilesInContainer 단일 명령으로 여러 파일 존재 여부 확인
+func (c *Checker) checkFilesInContainer(ctx context.Context, containerID string) map[string]bool {
+	if c.client == nil {
+		return nil
+	}
+
+	// 모든 체크를 하나의 셸 스크립트로 실행
+	script := `
+echo -n "nginx:" && test -f /etc/nginx/nginx.conf && echo "1" || echo "0"
+echo -n "apache:" && (test -f /etc/apache2/apache2.conf || test -f /etc/httpd/conf/httpd.conf) && echo "1" || echo "0"
+echo -n "nextjs:" && (test -f /app/next.config.js || test -f /app/next.config.mjs || test -d /app/.next) && echo "1" || echo "0"
+echo -n "vite:" && (test -f /app/vite.config.ts || test -f /app/vite.config.js) && echo "1" || echo "0"
+echo -n "react_build:" && (test -f /app/build/index.html || test -f /app/dist/index.html) && echo "1" || echo "0"
+echo -n "react_src:" && (test -f /app/src/main.tsx || test -f /app/src/App.tsx || test -f /app/src/index.tsx) && echo "1" || echo "0"
+echo -n "java:" && (test -f /app/pom.xml || test -f /app/build.gradle || test -d /app/BOOT-INF || ls /app/*.jar 2>/dev/null | head -1 | grep -q .) && echo "1" || echo "0"
+echo -n "golang:" && test -f /app/go.mod && echo "1" || echo "0"
+echo -n "python:" && (test -f /app/requirements.txt || test -f /app/pyproject.toml) && echo "1" || echo "0"
+echo -n "python_api:" && test -f /app/main.py && grep -qiE "fastapi|flask|django" /app/main.py 2>/dev/null && echo "1" || echo "0"
+echo -n "package_json:" && test -f /app/package.json && echo "1" || echo "0"
+`
+
+	execConfig := dockertypes.ExecConfig{
+		Cmd:          []string{"sh", "-c", script},
+		AttachStdout: true,
+		AttachStderr: false,
+	}
+
+	execResp, err := c.client.ContainerExecCreate(ctx, containerID, execConfig)
+	if err != nil {
+		return nil
+	}
+
+	resp, err := c.client.ContainerExecAttach(ctx, execResp.ID, dockertypes.ExecStartCheck{})
+	if err != nil {
+		return nil
+	}
+	defer resp.Close()
+
+	buf := make([]byte, 4096)
+	n, _ := resp.Reader.Read(buf)
+	output := string(buf[:n])
+
+	// 결과 파싱
+	result := make(map[string]bool)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if idx := strings.Index(line, ":"); idx > 0 {
+			key := line[:idx]
+			val := strings.TrimSpace(line[idx+1:])
+			result[key] = val == "1"
+		}
+	}
+
+	return result
 }
 
 // dirExistsInContainer 컨테이너 내부에 디렉토리가 존재하는지 확인
