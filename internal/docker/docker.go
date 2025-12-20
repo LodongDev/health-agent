@@ -13,6 +13,7 @@ import (
 	"health-agent/internal/types"
 
 	dockertypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
@@ -257,7 +258,85 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 		}
 	}
 
+	// 4. 컨테이너 내부 파일 구조로 감지 (최후의 수단)
+	if fileType := c.detectTypeByFileStructure(cont.ID); fileType != types.TypeDocker {
+		log.Printf("[DEBUG] %s: detected by file structure -> %s", name, fileType)
+		return fileType
+	}
+
 	return types.TypeDocker
+}
+
+// detectTypeByFileStructure 컨테이너 내부 파일 구조를 확인하여 타입 판별
+func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceType {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// 확인할 파일 목록과 해당 타입
+	fileChecks := []struct {
+		paths    []string
+		fileType types.ServiceType
+	}{
+		// Java/Spring
+		{[]string{"/app/pom.xml", "/pom.xml", "/app/build.gradle", "/build.gradle"}, types.TypeAPIJava},
+		// Python
+		{[]string{"/app/requirements.txt", "/requirements.txt", "/app/pyproject.toml", "/pyproject.toml"}, types.TypeAPIPython},
+		// Node.js
+		{[]string{"/app/package.json", "/package.json"}, types.TypeAPINode},
+		// Go
+		{[]string{"/app/go.mod", "/go.mod"}, types.TypeAPIGo},
+		// Nginx
+		{[]string{"/etc/nginx/nginx.conf"}, types.TypeWebNginx},
+		// Apache
+		{[]string{"/etc/apache2/apache2.conf", "/etc/httpd/conf/httpd.conf"}, types.TypeWebApache},
+	}
+
+	for _, check := range fileChecks {
+		for _, path := range check.paths {
+			if c.fileExistsInContainer(ctx, containerID, path) {
+				return check.fileType
+			}
+		}
+	}
+
+	return types.TypeDocker
+}
+
+// fileExistsInContainer 컨테이너 내부에 파일이 존재하는지 확인
+func (c *Checker) fileExistsInContainer(ctx context.Context, containerID, path string) bool {
+	if c.client == nil {
+		return false
+	}
+
+	execConfig := container.ExecOptions{
+		Cmd:          []string{"test", "-f", path},
+		AttachStdout: false,
+		AttachStderr: false,
+	}
+
+	execResp, err := c.client.ContainerExecCreate(ctx, containerID, execConfig)
+	if err != nil {
+		return false
+	}
+
+	err = c.client.ContainerExecStart(ctx, execResp.ID, container.ExecStartOptions{})
+	if err != nil {
+		return false
+	}
+
+	// exec 결과 확인 (exit code 0 = 파일 존재)
+	for i := 0; i < 10; i++ {
+		inspect, err := c.client.ContainerExecInspect(ctx, execResp.ID)
+		if err != nil {
+			return false
+		}
+		if !inspect.Running {
+			return inspect.ExitCode == 0
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	return false
 }
 
 func (c *Checker) checkSpringApp(ctx context.Context, cont dockertypes.Container, state types.ServiceState) types.ServiceState {
