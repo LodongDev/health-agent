@@ -84,30 +84,52 @@ func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container
 		CheckedAt: time.Now(),
 	}
 
-	// Docker 자체 헬스체크가 있으면 우선 사용
+	// 컨테이너 상세 정보 가져오기
 	inspect, err := c.client.ContainerInspect(ctx, cont.ID)
-	if err == nil && inspect.State.Health != nil {
-		switch inspect.State.Health.Status {
-		case "healthy":
-			state.Status = types.StatusUp
-			state.Message = "Docker HEALTHCHECK: healthy"
-			state.ResponseTime = int(time.Since(start).Milliseconds())
-			return state
-		case "unhealthy":
-			state.Status = types.StatusDown
-			state.Message = "Docker HEALTHCHECK: unhealthy"
-			state.ResponseTime = int(time.Since(start).Milliseconds())
-			return state
+	if err == nil {
+		// 이미지 이름을 경로로 사용
+		state.Path = cont.Image
+
+		// 컨테이너 IP 설정
+		for _, network := range inspect.NetworkSettings.Networks {
+			if network.IPAddress != "" {
+				state.Host = network.IPAddress
+				break
+			}
+		}
+
+		// 포트 정보 설정
+		for _, p := range cont.Ports {
+			if p.PrivatePort > 0 {
+				state.Port = int(p.PrivatePort)
+				break
+			}
+		}
+
+		// Docker 자체 헬스체크가 있으면 우선 사용
+		if inspect.State.Health != nil {
+			switch inspect.State.Health.Status {
+			case "healthy":
+				state.Status = types.StatusUp
+				state.Message = "Docker HEALTHCHECK: healthy"
+				state.ResponseTime = int(time.Since(start).Milliseconds())
+				return state
+			case "unhealthy":
+				state.Status = types.StatusDown
+				state.Message = "Docker HEALTHCHECK: unhealthy"
+				state.ResponseTime = int(time.Since(start).Milliseconds())
+				return state
+			}
 		}
 	}
 
 	// 서비스 타입별 체크
 	switch svcType {
-	case types.TypeSpring:
+	case types.TypeAPIJava, types.TypeSpring:
 		state = c.checkSpringApp(ctx, cont, state)
-	case types.TypeWeb:
+	case types.TypeWebNginx, types.TypeWebApache, types.TypeWeb:
 		state = c.checkWebApp(ctx, cont, state)
-	case types.TypeAPI:
+	case types.TypeAPI, types.TypeAPIPython, types.TypeAPINode, types.TypeAPIGo:
 		state = c.checkAPIApp(ctx, cont, state)
 	case types.TypeMySQL, types.TypePostgreSQL, types.TypeRedis, types.TypeMongoDB:
 		state = c.checkDBService(ctx, cont, state)
@@ -120,8 +142,8 @@ func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container
 			state.Status = types.StatusDown
 			state.Message = fmt.Sprintf("상태: %s", cont.State)
 		}
+		state.ResponseTime = int(time.Since(start).Milliseconds())
 	}
-	state.ResponseTime = int(time.Since(start).Milliseconds())
 	return state
 }
 
@@ -129,7 +151,36 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 	image := strings.ToLower(cont.Image)
 	name := strings.ToLower(cont.Names[0])
 
-	// 이미지 기반 감지
+	// 1. 라벨 기반 감지 (최우선)
+	if svcType, ok := cont.Labels["health.type"]; ok {
+		switch strings.ToLower(svcType) {
+		case "spring", "java", "api_java":
+			return types.TypeAPIJava
+		case "python", "fastapi", "flask", "django", "api_python":
+			return types.TypeAPIPython
+		case "node", "nodejs", "api_node":
+			return types.TypeAPINode
+		case "go", "golang", "api_go":
+			return types.TypeAPIGo
+		case "api":
+			return types.TypeAPI
+		case "web", "nginx":
+			return types.TypeWebNginx
+		case "apache":
+			return types.TypeWebApache
+		case "mysql":
+			return types.TypeMySQL
+		case "postgresql", "postgres":
+			return types.TypePostgreSQL
+		case "redis":
+			return types.TypeRedis
+		case "mongodb", "mongo":
+			return types.TypeMongoDB
+		}
+	}
+
+	// 2. 이미지 기반 감지
+	// Database
 	if strings.Contains(image, "mysql") || strings.Contains(image, "mariadb") {
 		return types.TypeMySQL
 	}
@@ -142,31 +193,41 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 	if strings.Contains(image, "mongo") {
 		return types.TypeMongoDB
 	}
-	if strings.Contains(image, "nginx") || strings.Contains(image, "httpd") || strings.Contains(image, "apache") {
-		return types.TypeWeb
+
+	// Web servers
+	if strings.Contains(image, "nginx") {
+		return types.TypeWebNginx
+	}
+	if strings.Contains(image, "httpd") || strings.Contains(image, "apache") {
+		return types.TypeWebApache
 	}
 
-	// 라벨 기반 감지
-	if svcType, ok := cont.Labels["health.type"]; ok {
-		switch svcType {
-		case "spring":
-			return types.TypeSpring
-		case "web":
-			return types.TypeWeb
-		case "api":
-			return types.TypeAPI
-		}
+	// API - 언어/프레임워크 감지
+	if strings.Contains(image, "python") || strings.Contains(image, "fastapi") ||
+		strings.Contains(image, "flask") || strings.Contains(image, "django") ||
+		strings.Contains(name, "python") || strings.Contains(name, "fastapi") {
+		return types.TypeAPIPython
+	}
+	if strings.Contains(image, "node") || strings.Contains(image, "npm") ||
+		strings.Contains(name, "node") || strings.Contains(name, "express") {
+		return types.TypeAPINode
+	}
+	if strings.Contains(image, "golang") || strings.Contains(name, "-go") ||
+		strings.Contains(name, "go-") {
+		return types.TypeAPIGo
+	}
+	if strings.Contains(image, "java") || strings.Contains(image, "spring") ||
+		strings.Contains(image, "openjdk") || strings.Contains(image, "jdk") ||
+		strings.Contains(image, "maven") || strings.Contains(image, "gradle") ||
+		strings.Contains(name, "spring") || strings.Contains(name, "-api") {
+		return types.TypeAPIJava
 	}
 
-	// 포트 기반 감지
+	// 3. 포트 기반 감지
 	for _, p := range cont.Ports {
 		switch p.PrivatePort {
-		case 8080, 8081, 8082:
-			// Spring 또는 API
-			if strings.Contains(image, "java") || strings.Contains(image, "spring") ||
-				strings.Contains(image, "openjdk") || strings.Contains(name, "spring") {
-				return types.TypeSpring
-			}
+		case 8080, 8081, 8082, 8000, 8888:
+			// API 서버 (구체적 타입은 위에서 결정 안되면 일반 API)
 			return types.TypeAPI
 		case 80, 443:
 			return types.TypeWeb
@@ -178,10 +239,14 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 			return types.TypeRedis
 		case 27017:
 			return types.TypeMongoDB
+		case 3000:
+			return types.TypeAPINode // Node.js 기본 포트
+		case 5000:
+			return types.TypeAPIPython // Flask 기본 포트
 		}
 	}
 
-	return types.TypeUnknown
+	return types.TypeDocker
 }
 
 func (c *Checker) checkSpringApp(ctx context.Context, cont dockertypes.Container, state types.ServiceState) types.ServiceState {
@@ -189,18 +254,22 @@ func (c *Checker) checkSpringApp(ctx context.Context, cont dockertypes.Container
 	port := c.getHTTPPort(cont)
 
 	endpoints := []string{"/actuator/health", "/health", "/"}
+	var lastElapsed int
 	for _, ep := range endpoints {
 		url := fmt.Sprintf("http://%s:%d%s", ip, port, ep)
-		status, msg := c.httpCheck(url)
+		status, msg, elapsed := c.httpCheck(url)
+		lastElapsed = elapsed
 		if status == types.StatusUp {
 			state.Status = status
 			state.Message = fmt.Sprintf("%s -> %s", ep, msg)
 			state.Endpoint = ep
+			state.ResponseTime = elapsed
 			return state
 		}
 	}
 	state.Status = types.StatusDown
 	state.Message = "모든 엔드포인트 체크 실패"
+	state.ResponseTime = lastElapsed
 	return state
 }
 
@@ -209,10 +278,11 @@ func (c *Checker) checkWebApp(ctx context.Context, cont dockertypes.Container, s
 	port := c.getHTTPPort(cont)
 
 	url := fmt.Sprintf("http://%s:%d/", ip, port)
-	status, msg := c.httpCheck(url)
+	status, msg, elapsed := c.httpCheck(url)
 	state.Status = status
 	state.Message = msg
 	state.Endpoint = "/"
+	state.ResponseTime = elapsed
 	return state
 }
 
@@ -221,18 +291,22 @@ func (c *Checker) checkAPIApp(ctx context.Context, cont dockertypes.Container, s
 	port := c.getHTTPPort(cont)
 
 	endpoints := []string{"/health", "/api/health", "/"}
+	var lastElapsed int
 	for _, ep := range endpoints {
 		url := fmt.Sprintf("http://%s:%d%s", ip, port, ep)
-		status, msg := c.httpCheck(url)
+		status, msg, elapsed := c.httpCheck(url)
+		lastElapsed = elapsed
 		if status == types.StatusUp {
 			state.Status = status
 			state.Message = fmt.Sprintf("%s -> %s", ep, msg)
 			state.Endpoint = ep
+			state.ResponseTime = elapsed
 			return state
 		}
 	}
 	state.Status = types.StatusDown
 	state.Message = "모든 엔드포인트 체크 실패"
+	state.ResponseTime = lastElapsed
 	return state
 }
 
@@ -253,11 +327,15 @@ func (c *Checker) checkDBService(ctx context.Context, cont dockertypes.Container
 		port = 0
 	}
 
-	// 포트 연결 테스트
+	// 포트 연결 테스트 (응답 시간 측정)
+	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), c.timeout)
+	elapsed := int(time.Since(start).Milliseconds())
+
 	if err != nil {
 		state.Status = types.StatusDown
 		state.Message = fmt.Sprintf("포트 %d 연결 실패", port)
+		state.ResponseTime = elapsed
 		return state
 	}
 	conn.Close()
@@ -266,26 +344,31 @@ func (c *Checker) checkDBService(ctx context.Context, cont dockertypes.Container
 	state.Message = fmt.Sprintf("포트 %d 연결 정상", port)
 	state.Port = port
 	state.Host = ip
+	state.ResponseTime = elapsed
 	return state
 }
 
-func (c *Checker) httpCheck(url string) (types.Status, string) {
+// httpCheck HTTP 요청을 통해 상태를 확인하고 응답 시간을 반환
+func (c *Checker) httpCheck(url string) (types.Status, string, int) {
 	client := &http.Client{Timeout: c.timeout}
+	start := time.Now()
 	resp, err := client.Get(url)
+	elapsed := int(time.Since(start).Milliseconds())
+
 	if err != nil {
-		return types.StatusDown, fmt.Sprintf("연결 실패: %v", err)
+		return types.StatusDown, fmt.Sprintf("연결 실패: %v", err), elapsed
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return types.StatusUp, fmt.Sprintf("%d OK", resp.StatusCode)
+		return types.StatusUp, fmt.Sprintf("%d OK", resp.StatusCode), elapsed
 	}
 	if resp.StatusCode >= 500 {
-		return types.StatusDown, fmt.Sprintf("%d %s", resp.StatusCode, string(body))
+		return types.StatusDown, fmt.Sprintf("%d %s", resp.StatusCode, string(body)), elapsed
 	}
-	return types.StatusWarn, fmt.Sprintf("%d %s", resp.StatusCode, resp.Status)
+	return types.StatusWarn, fmt.Sprintf("%d %s", resp.StatusCode, resp.Status), elapsed
 }
 
 func (c *Checker) getContainerIP(ctx context.Context, containerID string) string {

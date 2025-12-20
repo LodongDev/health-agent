@@ -16,15 +16,28 @@ const (
 type ServiceType string
 
 const (
-	TypeMySQL      ServiceType = "mysql"
-	TypePostgreSQL ServiceType = "postgresql"
-	TypeRedis      ServiceType = "redis"
-	TypeMongoDB    ServiceType = "mongodb"
-	TypeSpring     ServiceType = "spring"
-	TypeWeb        ServiceType = "web"
-	TypeAPI        ServiceType = "api"
-	TypeDocker     ServiceType = "docker"
-	TypeUnknown    ServiceType = "unknown"
+	// Database
+	TypeMySQL      ServiceType = "MYSQL"
+	TypePostgreSQL ServiceType = "POSTGRESQL"
+	TypeRedis      ServiceType = "REDIS"
+	TypeMongoDB    ServiceType = "MONGODB"
+
+	// API - 언어별 구분
+	TypeSpring     ServiceType = "API_JAVA"     // Spring Boot (Java)
+	TypeAPIJava    ServiceType = "API_JAVA"     // Java API
+	TypeAPIPython  ServiceType = "API_PYTHON"   // Python API (FastAPI, Flask, Django)
+	TypeAPINode    ServiceType = "API_NODE"     // Node.js API
+	TypeAPIGo      ServiceType = "API_GO"       // Go API
+	TypeAPI        ServiceType = "API"          // 일반 API
+
+	// Web
+	TypeWebNginx   ServiceType = "WEB_NGINX"    // Nginx
+	TypeWebApache  ServiceType = "WEB_APACHE"   // Apache HTTPD
+	TypeWeb        ServiceType = "WEB"          // 일반 Web
+
+	// Container
+	TypeDocker     ServiceType = "CONTAINER"
+	TypeUnknown    ServiceType = "UNKNOWN"
 )
 
 // ServiceState 서비스 상태
