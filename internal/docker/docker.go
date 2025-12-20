@@ -232,10 +232,24 @@ func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceTyp
 	}
 
 	// 2. Next.js / React 확인 → WEB
+	// Next.js
 	if c.fileExistsInContainer(ctx, containerID, "/app/next.config.js") ||
 		c.fileExistsInContainer(ctx, containerID, "/app/next.config.mjs") ||
 		c.fileExistsInContainer(ctx, containerID, "/app/.next/BUILD_ID") ||
 		c.dirExistsInContainer(ctx, containerID, "/app/.next") {
+		return types.TypeWeb
+	}
+	// React (Create React App - build 폴더)
+	if c.fileExistsInContainer(ctx, containerID, "/app/build/index.html") ||
+		c.fileExistsInContainer(ctx, containerID, "/build/index.html") {
+		return types.TypeWeb
+	}
+	// React (개발 모드 - src/index.tsx 또는 src/App.tsx)
+	if (c.fileExistsInContainer(ctx, containerID, "/app/src/index.tsx") ||
+		c.fileExistsInContainer(ctx, containerID, "/app/src/App.tsx") ||
+		c.fileExistsInContainer(ctx, containerID, "/app/src/index.js") ||
+		c.fileExistsInContainer(ctx, containerID, "/app/src/App.js")) &&
+		c.fileExistsInContainer(ctx, containerID, "/app/package.json") {
 		return types.TypeWeb
 	}
 
