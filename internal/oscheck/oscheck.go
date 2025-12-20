@@ -170,19 +170,42 @@ func (c *Checker) CheckRedis() *types.ServiceState {
 		return state
 	}
 	conn.SetDeadline(time.Now().Add(c.timeout))
-	conn.Write([]byte("PING\r\n"))
-	buf := make([]byte, 64)
+
+	// RESP 프로토콜로 PING 전송
+	conn.Write([]byte("*1\r\n$4\r\nPING\r\n"))
+	buf := make([]byte, 128)
 	n, err := conn.Read(buf)
 	conn.Close()
-	if err != nil || !strings.Contains(string(buf[:n]), "PONG") {
-		state.Status = types.StatusWarn
-		state.Message = fmt.Sprintf("포트 %d 연결됨, PING 실패", port)
-		state.ResponseTime = int(time.Since(start).Milliseconds())
+	elapsed := int(time.Since(start).Milliseconds())
+	response := string(buf[:n])
+
+	if err != nil {
+		state.Status = types.StatusDown
+		state.Message = fmt.Sprintf("Redis 응답 실패: %v", err)
+		state.ResponseTime = elapsed
 		return state
 	}
-	state.Status = types.StatusUp
-	state.Message = fmt.Sprintf("포트 %d 정상 (PONG)", port)
-	state.ResponseTime = int(time.Since(start).Milliseconds())
+
+	// PONG 응답 확인
+	if strings.Contains(response, "PONG") {
+		state.Status = types.StatusUp
+		state.Message = fmt.Sprintf("포트 %d PONG 응답 정상", port)
+		state.ResponseTime = elapsed
+		return state
+	}
+
+	// 인증 필요한 경우
+	if strings.Contains(response, "NOAUTH") || strings.Contains(response, "AUTH") {
+		state.Status = types.StatusUp // 서버는 정상 동작 중
+		state.Message = fmt.Sprintf("포트 %d 정상 (인증 필요)", port)
+		state.ResponseTime = elapsed
+		return state
+	}
+
+	// 기타 응답
+	state.Status = types.StatusWarn
+	state.Message = fmt.Sprintf("포트 %d 연결됨, 응답: %s", port, strings.TrimSpace(response))
+	state.ResponseTime = elapsed
 	return state
 }
 
