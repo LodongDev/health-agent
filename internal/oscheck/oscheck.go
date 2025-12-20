@@ -41,13 +41,15 @@ func (c *Checker) CheckAll() []types.ServiceState {
 }
 
 func (c *Checker) CheckMySQL() *types.ServiceState {
-	port := c.getMySQLPort()
+	port, configPath := c.getMySQLPortAndPath()
 	if port == 0 {
 		return nil
 	}
 	state := &types.ServiceState{
 		ID: "os-mysql", Name: "MySQL (OS)", Type: types.TypeMySQL,
 		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ConfigPath: configPath,
+		Path:       c.findExecutable("mysqld", "mysql"),
 	}
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), c.timeout)
@@ -73,27 +75,35 @@ func (c *Checker) CheckMySQL() *types.ServiceState {
 	return state
 }
 
-func (c *Checker) getMySQLPort() int {
+func (c *Checker) getMySQLPortAndPath() (int, string) {
 	paths := []string{"/etc/my.cnf", "/etc/mysql/my.cnf", "/etc/mysql/mysql.conf.d/mysqld.cnf"}
 	for _, p := range paths {
 		if port := c.parseConfigPort(p, "port"); port > 0 {
-			return port
+			return port, p
+		}
+		// 설정 파일은 존재하지만 포트 설정이 없는 경우
+		if _, err := os.Stat(p); err == nil {
+			if c.isPortListening(3306) {
+				return 3306, p
+			}
 		}
 	}
 	if c.isPortListening(3306) {
-		return 3306
+		return 3306, ""
 	}
-	return 0
+	return 0, ""
 }
 
 func (c *Checker) CheckPostgreSQL() *types.ServiceState {
-	port := c.getPostgreSQLPort()
+	port, configPath := c.getPostgreSQLPortAndPath()
 	if port == 0 {
 		return nil
 	}
 	state := &types.ServiceState{
 		ID: "os-postgresql", Name: "PostgreSQL (OS)", Type: types.TypePostgreSQL,
 		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ConfigPath: configPath,
+		Path:       c.findExecutable("postgres", "postgresql"),
 	}
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), c.timeout)
@@ -119,30 +129,37 @@ func (c *Checker) CheckPostgreSQL() *types.ServiceState {
 	return state
 }
 
-func (c *Checker) getPostgreSQLPort() int {
+func (c *Checker) getPostgreSQLPortAndPath() (int, string) {
 	patterns := []string{"/etc/postgresql/*/main/postgresql.conf", "/var/lib/pgsql/data/postgresql.conf"}
 	for _, pattern := range patterns {
 		matches, _ := filepath.Glob(pattern)
 		for _, path := range matches {
 			if port := c.parseConfigPort(path, "port"); port > 0 {
-				return port
+				return port, path
+			}
+			if _, err := os.Stat(path); err == nil {
+				if c.isPortListening(5432) {
+					return 5432, path
+				}
 			}
 		}
 	}
 	if c.isPortListening(5432) {
-		return 5432
+		return 5432, ""
 	}
-	return 0
+	return 0, ""
 }
 
 func (c *Checker) CheckRedis() *types.ServiceState {
-	port := c.getRedisPort()
+	port, configPath := c.getRedisPortAndPath()
 	if port == 0 {
 		return nil
 	}
 	state := &types.ServiceState{
 		ID: "os-redis", Name: "Redis (OS)", Type: types.TypeRedis,
 		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ConfigPath: configPath,
+		Path:       c.findExecutable("redis-server"),
 	}
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), c.timeout)
@@ -169,27 +186,34 @@ func (c *Checker) CheckRedis() *types.ServiceState {
 	return state
 }
 
-func (c *Checker) getRedisPort() int {
+func (c *Checker) getRedisPortAndPath() (int, string) {
 	paths := []string{"/etc/redis/redis.conf", "/etc/redis.conf"}
 	for _, p := range paths {
 		if port := c.parseConfigPort(p, "port"); port > 0 {
-			return port
+			return port, p
+		}
+		if _, err := os.Stat(p); err == nil {
+			if c.isPortListening(6379) {
+				return 6379, p
+			}
 		}
 	}
 	if c.isPortListening(6379) {
-		return 6379
+		return 6379, ""
 	}
-	return 0
+	return 0, ""
 }
 
 func (c *Checker) CheckMongoDB() *types.ServiceState {
-	port := c.getMongoDBPort()
+	port, configPath := c.getMongoDBPortAndPath()
 	if port == 0 {
 		return nil
 	}
 	state := &types.ServiceState{
 		ID: "os-mongodb", Name: "MongoDB (OS)", Type: types.TypeMongoDB,
 		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ConfigPath: configPath,
+		Path:       c.findExecutable("mongod"),
 	}
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), c.timeout)
@@ -206,17 +230,22 @@ func (c *Checker) CheckMongoDB() *types.ServiceState {
 	return state
 }
 
-func (c *Checker) getMongoDBPort() int {
+func (c *Checker) getMongoDBPortAndPath() (int, string) {
 	paths := []string{"/etc/mongod.conf", "/etc/mongodb.conf"}
 	for _, p := range paths {
 		if port := c.parseYAMLPort(p, "port"); port > 0 {
-			return port
+			return port, p
+		}
+		if _, err := os.Stat(p); err == nil {
+			if c.isPortListening(27017) {
+				return 27017, p
+			}
 		}
 	}
 	if c.isPortListening(27017) {
-		return 27017
+		return 27017, ""
 	}
-	return 0
+	return 0, ""
 }
 
 func (c *Checker) parseConfigPort(path, key string) int {
@@ -269,4 +298,26 @@ func (c *Checker) isPortListening(port int) bool {
 func (c *Checker) commandExists(cmd string) bool {
 	_, err := exec.LookPath(cmd)
 	return err == nil
+}
+
+func (c *Checker) findExecutable(names ...string) string {
+	// 실행 파일 검색 경로
+	searchPaths := []string{
+		"/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin",
+		"/bin", "/sbin", "/opt/mysql/bin", "/opt/postgresql/bin",
+	}
+	for _, name := range names {
+		// PATH에서 찾기
+		if path, err := exec.LookPath(name); err == nil {
+			return path
+		}
+		// 직접 경로 검색
+		for _, dir := range searchPaths {
+			fullPath := filepath.Join(dir, name)
+			if _, err := os.Stat(fullPath); err == nil {
+				return fullPath
+			}
+		}
+	}
+	return ""
 }

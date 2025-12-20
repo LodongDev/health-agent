@@ -75,6 +75,7 @@ func (c *Checker) CheckAll(ctx context.Context) ([]types.ServiceState, error) {
 func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container) types.ServiceState {
 	name := strings.TrimPrefix(cont.Names[0], "/")
 	svcType := c.detectServiceType(cont)
+	start := time.Now()
 
 	state := types.ServiceState{
 		ID:        fmt.Sprintf("docker-%s", cont.ID[:12]),
@@ -90,16 +91,17 @@ func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container
 		case "healthy":
 			state.Status = types.StatusUp
 			state.Message = "Docker HEALTHCHECK: healthy"
+			state.ResponseTime = int(time.Since(start).Milliseconds())
 			return state
 		case "unhealthy":
 			state.Status = types.StatusDown
 			state.Message = "Docker HEALTHCHECK: unhealthy"
+			state.ResponseTime = int(time.Since(start).Milliseconds())
 			return state
 		}
 	}
 
 	// 서비스 타입별 체크
-	start := time.Now()
 	switch svcType {
 	case types.TypeSpring:
 		state = c.checkSpringApp(ctx, cont, state)

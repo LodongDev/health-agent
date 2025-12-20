@@ -38,9 +38,11 @@ type ServiceState struct {
 	CheckedAt    time.Time   `json:"checkedAt"`
 
 	// 추가 정보
-	Host     string `json:"host,omitempty"`
-	Port     int    `json:"port,omitempty"`
-	Endpoint string `json:"endpoint,omitempty"`
+	Host       string `json:"host,omitempty"`
+	Port       int    `json:"port,omitempty"`
+	Endpoint   string `json:"endpoint,omitempty"`
+	Path       string `json:"path,omitempty"`       // 설정 파일 또는 실행 파일 경로
+	ConfigPath string `json:"configPath,omitempty"` // 설정 파일 경로
 }
 
 // AgentReport 에이전트 보고서
