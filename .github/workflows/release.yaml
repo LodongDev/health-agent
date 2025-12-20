@@ -56,7 +56,7 @@ jobs:
             license: MIT
             contents:
               - src: dist/health-agent_linux_amd64
-                dst: /usr/local/bin/health-agent
+                dst: /usr/bin/health-agent
                 file_info:
                   mode: 0755
             EOF
@@ -75,7 +75,7 @@ jobs:
             license: MIT
             contents:
               - src: dist/health-agent_linux_arm64
-                dst: /usr/local/bin/health-agent
+                dst: /usr/bin/health-agent
                 file_info:
                   mode: 0755
             EOF

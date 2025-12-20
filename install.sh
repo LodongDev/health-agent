@@ -56,16 +56,16 @@ elif [ "$OS" = "debian" ]; then
     cd "$TMP_DIR"
     curl -sSLO "https://github.com/LodongDev/health-agent/releases/download/${VERSION}/health-agent_${VERSION_NUM}_linux_${ARCH}.tar.gz"
     tar -xzf "health-agent_${VERSION_NUM}_linux_${ARCH}.tar.gz"
-    $SUDO mv health-agent /usr/local/bin/
-    $SUDO chmod +x /usr/local/bin/health-agent
+    $SUDO mv health-agent /usr/bin/
+    $SUDO chmod +x /usr/bin/health-agent
     rm -rf "$TMP_DIR"
 fi
 
-if [ -x /usr/local/bin/health-agent ]; then
+if [ -x /usr/bin/health-agent ]; then
     hash -r 2>/dev/null || true
     echo ""
     info "설치 완료!"
-    /usr/local/bin/health-agent version
+    /usr/bin/health-agent version
     echo ""
     echo "사용법:"
     echo "  1. 로그인:  health-agent login"
