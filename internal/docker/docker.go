@@ -125,7 +125,7 @@ func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container
 
 	// 서비스 타입별 체크
 	switch svcType {
-	case types.TypeAPIJava, types.TypeSpring:
+	case types.TypeAPIJava:
 		state = c.checkSpringApp(ctx, cont, state)
 	case types.TypeWebNginx, types.TypeWebApache, types.TypeWeb:
 		state = c.checkWebApp(ctx, cont, state)
