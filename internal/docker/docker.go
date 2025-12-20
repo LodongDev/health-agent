@@ -737,7 +737,195 @@ func (c *Checker) checkDBService(ctx context.Context, cont dockertypes.Container
 		port = 0
 	}
 
-	// 포트 연결 테스트 (응답 시간 측정)
+	state.Port = port
+	state.Host = ip
+
+	// 타입별 실제 체크
+	switch state.Type {
+	case types.TypeRedis:
+		return c.checkRedis(ip, port, state)
+	case types.TypeMySQL:
+		return c.checkMySQL(ip, port, state)
+	case types.TypePostgreSQL:
+		return c.checkPostgreSQL(ip, port, state)
+	case types.TypeMongoDB:
+		return c.checkMongoDB(ip, port, state)
+	default:
+		return c.checkTCPPort(ip, port, state)
+	}
+}
+
+// checkRedis Redis PING 명령으로 실제 동작 확인
+func (c *Checker) checkRedis(ip string, port int, state types.ServiceState) types.ServiceState {
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), c.timeout)
+	if err != nil {
+		state.Status = types.StatusDown
+		state.Message = fmt.Sprintf("Redis 연결 실패: %v", err)
+		state.ResponseTime = int(time.Since(start).Milliseconds())
+		return state
+	}
+	defer conn.Close()
+
+	// Redis PING 명령 전송 (RESP 프로토콜)
+	conn.SetDeadline(time.Now().Add(c.timeout))
+	_, err = conn.Write([]byte("*1\r\n$4\r\nPING\r\n"))
+	if err != nil {
+		state.Status = types.StatusDown
+		state.Message = fmt.Sprintf("Redis PING 전송 실패: %v", err)
+		state.ResponseTime = int(time.Since(start).Milliseconds())
+		return state
+	}
+
+	// 응답 읽기
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	elapsed := int(time.Since(start).Milliseconds())
+
+	if err != nil {
+		state.Status = types.StatusDown
+		state.Message = fmt.Sprintf("Redis 응답 실패: %v", err)
+		state.ResponseTime = elapsed
+		return state
+	}
+
+	response := string(buf[:n])
+	if strings.Contains(response, "PONG") || strings.Contains(response, "+PONG") {
+		state.Status = types.StatusUp
+		state.Message = "Redis PONG 응답 정상"
+		state.ResponseTime = elapsed
+		return state
+	}
+
+	// 인증 필요한 경우
+	if strings.Contains(response, "NOAUTH") || strings.Contains(response, "AUTH") {
+		state.Status = types.StatusWarn
+		state.Message = "Redis 인증 필요 (서버 응답 중)"
+		state.ResponseTime = elapsed
+		return state
+	}
+
+	state.Status = types.StatusWarn
+	state.Message = fmt.Sprintf("Redis 응답: %s", strings.TrimSpace(response))
+	state.ResponseTime = elapsed
+	return state
+}
+
+// checkMySQL MySQL 프로토콜 핸드셰이크 확인
+func (c *Checker) checkMySQL(ip string, port int, state types.ServiceState) types.ServiceState {
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), c.timeout)
+	if err != nil {
+		state.Status = types.StatusDown
+		state.Message = fmt.Sprintf("MySQL 연결 실패: %v", err)
+		state.ResponseTime = int(time.Since(start).Milliseconds())
+		return state
+	}
+	defer conn.Close()
+
+	// MySQL 서버는 연결 시 핸드셰이크 패킷을 보냄
+	conn.SetDeadline(time.Now().Add(c.timeout))
+	buf := make([]byte, 256)
+	n, err := conn.Read(buf)
+	elapsed := int(time.Since(start).Milliseconds())
+
+	if err != nil {
+		state.Status = types.StatusDown
+		state.Message = fmt.Sprintf("MySQL 핸드셰이크 실패: %v", err)
+		state.ResponseTime = elapsed
+		return state
+	}
+
+	// MySQL 핸드셰이크 패킷 확인 (최소 4바이트, 프로토콜 버전 포함)
+	if n >= 5 && buf[4] == 10 { // Protocol version 10
+		// 서버 버전 문자열 추출 (null-terminated)
+		version := ""
+		for i := 5; i < n && buf[i] != 0; i++ {
+			version += string(buf[i])
+		}
+		state.Status = types.StatusUp
+		state.Message = fmt.Sprintf("MySQL %s 응답 정상", version)
+		state.ResponseTime = elapsed
+		return state
+	}
+
+	state.Status = types.StatusUp
+	state.Message = "MySQL 연결 정상"
+	state.ResponseTime = elapsed
+	return state
+}
+
+// checkPostgreSQL PostgreSQL 연결 확인
+func (c *Checker) checkPostgreSQL(ip string, port int, state types.ServiceState) types.ServiceState {
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), c.timeout)
+	if err != nil {
+		state.Status = types.StatusDown
+		state.Message = fmt.Sprintf("PostgreSQL 연결 실패: %v", err)
+		state.ResponseTime = int(time.Since(start).Milliseconds())
+		return state
+	}
+	defer conn.Close()
+
+	// PostgreSQL 시작 메시지 전송 (SSLRequest)
+	conn.SetDeadline(time.Now().Add(c.timeout))
+	// SSLRequest: length(8) + SSL code(80877103)
+	sslRequest := []byte{0, 0, 0, 8, 4, 210, 22, 47}
+	_, err = conn.Write(sslRequest)
+	if err != nil {
+		state.Status = types.StatusDown
+		state.Message = fmt.Sprintf("PostgreSQL 요청 실패: %v", err)
+		state.ResponseTime = int(time.Since(start).Milliseconds())
+		return state
+	}
+
+	// 응답 읽기 (S=SSL지원, N=SSL미지원, E=에러)
+	buf := make([]byte, 1)
+	_, err = conn.Read(buf)
+	elapsed := int(time.Since(start).Milliseconds())
+
+	if err != nil {
+		state.Status = types.StatusDown
+		state.Message = fmt.Sprintf("PostgreSQL 응답 실패: %v", err)
+		state.ResponseTime = elapsed
+		return state
+	}
+
+	if buf[0] == 'S' || buf[0] == 'N' {
+		state.Status = types.StatusUp
+		state.Message = "PostgreSQL 응답 정상"
+		state.ResponseTime = elapsed
+		return state
+	}
+
+	state.Status = types.StatusUp
+	state.Message = "PostgreSQL 연결 정상"
+	state.ResponseTime = elapsed
+	return state
+}
+
+// checkMongoDB MongoDB 연결 확인
+func (c *Checker) checkMongoDB(ip string, port int, state types.ServiceState) types.ServiceState {
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), c.timeout)
+	if err != nil {
+		state.Status = types.StatusDown
+		state.Message = fmt.Sprintf("MongoDB 연결 실패: %v", err)
+		state.ResponseTime = int(time.Since(start).Milliseconds())
+		return state
+	}
+	defer conn.Close()
+	elapsed := int(time.Since(start).Milliseconds())
+
+	// MongoDB는 복잡한 프로토콜이므로 TCP 연결 성공만 확인
+	state.Status = types.StatusUp
+	state.Message = "MongoDB 연결 정상"
+	state.ResponseTime = elapsed
+	return state
+}
+
+// checkTCPPort 단순 TCP 포트 연결 확인
+func (c *Checker) checkTCPPort(ip string, port int, state types.ServiceState) types.ServiceState {
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), c.timeout)
 	elapsed := int(time.Since(start).Milliseconds())
@@ -752,8 +940,6 @@ func (c *Checker) checkDBService(ctx context.Context, cont dockertypes.Container
 
 	state.Status = types.StatusUp
 	state.Message = fmt.Sprintf("포트 %d 연결 정상", port)
-	state.Port = port
-	state.Host = ip
 	state.ResponseTime = elapsed
 	return state
 }
