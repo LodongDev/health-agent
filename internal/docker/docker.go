@@ -233,7 +233,7 @@ func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceTyp
 		return types.TypeWebApache
 	}
 
-	// 2. Next.js / React 확인 → WEB
+	// 2. Next.js / React / Vite 확인 → WEB
 	// Next.js
 	if c.fileExistsInContainer(ctx, containerID, "/app/next.config.js") ||
 		c.fileExistsInContainer(ctx, containerID, "/app/next.config.mjs") ||
@@ -242,31 +242,47 @@ func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceTyp
 		log.Printf("[DEBUG] %s: found Next.js", containerID[:12])
 		return types.TypeWeb
 	}
+	// Vite (React/Vue/Svelte)
+	if c.fileExistsInContainer(ctx, containerID, "/app/vite.config.ts") ||
+		c.fileExistsInContainer(ctx, containerID, "/app/vite.config.js") ||
+		c.fileExistsInContainer(ctx, containerID, "/vite.config.ts") ||
+		c.fileExistsInContainer(ctx, containerID, "/vite.config.js") {
+		log.Printf("[DEBUG] %s: found Vite", containerID[:12])
+		return types.TypeWeb
+	}
+	// Vite build output (dist 폴더)
+	if c.fileExistsInContainer(ctx, containerID, "/app/dist/index.html") ||
+		c.fileExistsInContainer(ctx, containerID, "/dist/index.html") {
+		log.Printf("[DEBUG] %s: found Vite dist", containerID[:12])
+		return types.TypeWeb
+	}
 	// React (Create React App - build 폴더)
 	if c.fileExistsInContainer(ctx, containerID, "/app/build/index.html") ||
 		c.fileExistsInContainer(ctx, containerID, "/build/index.html") {
 		log.Printf("[DEBUG] %s: found React build", containerID[:12])
 		return types.TypeWeb
 	}
-	// React (개발 모드 - src/index.tsx 또는 src/App.tsx)
-	if (c.fileExistsInContainer(ctx, containerID, "/app/src/index.tsx") ||
+	// React (개발 모드 - src/main.tsx, src/index.tsx, src/App.tsx)
+	if (c.fileExistsInContainer(ctx, containerID, "/app/src/main.tsx") ||
+		c.fileExistsInContainer(ctx, containerID, "/app/src/main.jsx") ||
+		c.fileExistsInContainer(ctx, containerID, "/app/src/index.tsx") ||
 		c.fileExistsInContainer(ctx, containerID, "/app/src/App.tsx") ||
 		c.fileExistsInContainer(ctx, containerID, "/app/src/index.js") ||
 		c.fileExistsInContainer(ctx, containerID, "/app/src/App.js")) &&
 		c.fileExistsInContainer(ctx, containerID, "/app/package.json") {
-		log.Printf("[DEBUG] %s: found React src", containerID[:12])
+		log.Printf("[DEBUG] %s: found React/Vite src", containerID[:12])
 		return types.TypeWeb
-	}
-	// package.json이 있고 이름에 -web이 포함되면 WEB
-	if c.fileExistsInContainer(ctx, containerID, "/app/package.json") {
-		log.Printf("[DEBUG] %s: found /app/package.json", containerID[:12])
 	}
 
 	// 3. Java/Spring 확인 → API_JAVA
 	if c.fileExistsInContainer(ctx, containerID, "/app/pom.xml") ||
 		c.fileExistsInContainer(ctx, containerID, "/pom.xml") ||
 		c.fileExistsInContainer(ctx, containerID, "/app/build.gradle") ||
-		c.fileExistsInContainer(ctx, containerID, "/build.gradle") {
+		c.fileExistsInContainer(ctx, containerID, "/build.gradle") ||
+		c.dirExistsInContainer(ctx, containerID, "/app/BOOT-INF") ||
+		c.dirExistsInContainer(ctx, containerID, "/BOOT-INF") ||
+		c.hasJarFiles(ctx, containerID, "/app") {
+		log.Printf("[DEBUG] %s: found Java/Spring", containerID[:12])
 		return types.TypeAPIJava
 	}
 
@@ -372,6 +388,35 @@ func (c *Checker) fileContains(ctx context.Context, containerID, path, search st
 		time.Sleep(50 * time.Millisecond)
 	}
 	return false
+}
+
+// hasJarFiles 컨테이너 내부에 .jar 파일이 있는지 확인
+func (c *Checker) hasJarFiles(ctx context.Context, containerID, path string) bool {
+	if c.client == nil {
+		return false
+	}
+
+	execConfig := dockertypes.ExecConfig{
+		Cmd:          []string{"sh", "-c", "ls " + path + "/*.jar 2>/dev/null | head -1"},
+		AttachStdout: true,
+		AttachStderr: false,
+	}
+
+	execResp, err := c.client.ContainerExecCreate(ctx, containerID, execConfig)
+	if err != nil {
+		return false
+	}
+
+	resp, err := c.client.ContainerExecAttach(ctx, execResp.ID, dockertypes.ExecStartCheck{})
+	if err != nil {
+		return false
+	}
+	defer resp.Close()
+
+	// 출력이 있으면 jar 파일이 있는 것
+	buf := make([]byte, 256)
+	n, _ := resp.Reader.Read(buf)
+	return n > 0 && strings.Contains(string(buf[:n]), ".jar")
 }
 
 // fileExistsInContainer 컨테이너 내부에 파일이 존재하는지 확인
