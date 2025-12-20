@@ -220,8 +220,11 @@ func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceTyp
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	log.Printf("[DEBUG] detectTypeByFileStructure: checking container %s", containerID[:12])
+
 	// 1. Web Server 확인 (Nginx, Apache/httpd)
 	if c.fileExistsInContainer(ctx, containerID, "/etc/nginx/nginx.conf") {
+		log.Printf("[DEBUG] %s: found nginx.conf", containerID[:12])
 		return types.TypeWebNginx
 	}
 	if c.fileExistsInContainer(ctx, containerID, "/etc/apache2/apache2.conf") ||
@@ -236,11 +239,13 @@ func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceTyp
 		c.fileExistsInContainer(ctx, containerID, "/app/next.config.mjs") ||
 		c.fileExistsInContainer(ctx, containerID, "/app/.next/BUILD_ID") ||
 		c.dirExistsInContainer(ctx, containerID, "/app/.next") {
+		log.Printf("[DEBUG] %s: found Next.js", containerID[:12])
 		return types.TypeWeb
 	}
 	// React (Create React App - build 폴더)
 	if c.fileExistsInContainer(ctx, containerID, "/app/build/index.html") ||
 		c.fileExistsInContainer(ctx, containerID, "/build/index.html") {
+		log.Printf("[DEBUG] %s: found React build", containerID[:12])
 		return types.TypeWeb
 	}
 	// React (개발 모드 - src/index.tsx 또는 src/App.tsx)
@@ -249,7 +254,12 @@ func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceTyp
 		c.fileExistsInContainer(ctx, containerID, "/app/src/index.js") ||
 		c.fileExistsInContainer(ctx, containerID, "/app/src/App.js")) &&
 		c.fileExistsInContainer(ctx, containerID, "/app/package.json") {
+		log.Printf("[DEBUG] %s: found React src", containerID[:12])
 		return types.TypeWeb
+	}
+	// package.json이 있고 이름에 -web이 포함되면 WEB
+	if c.fileExistsInContainer(ctx, containerID, "/app/package.json") {
+		log.Printf("[DEBUG] %s: found /app/package.json", containerID[:12])
 	}
 
 	// 3. Java/Spring 확인 → API_JAVA
@@ -367,6 +377,7 @@ func (c *Checker) fileContains(ctx context.Context, containerID, path, search st
 // fileExistsInContainer 컨테이너 내부에 파일이 존재하는지 확인
 func (c *Checker) fileExistsInContainer(ctx context.Context, containerID, path string) bool {
 	if c.client == nil {
+		log.Printf("[DEBUG] fileExistsInContainer: client is nil")
 		return false
 	}
 
@@ -378,11 +389,13 @@ func (c *Checker) fileExistsInContainer(ctx context.Context, containerID, path s
 
 	execResp, err := c.client.ContainerExecCreate(ctx, containerID, execConfig)
 	if err != nil {
+		log.Printf("[DEBUG] fileExistsInContainer %s %s: exec create failed: %v", containerID[:12], path, err)
 		return false
 	}
 
 	err = c.client.ContainerExecStart(ctx, execResp.ID, dockertypes.ExecStartCheck{})
 	if err != nil {
+		log.Printf("[DEBUG] fileExistsInContainer %s %s: exec start failed: %v", containerID[:12], path, err)
 		return false
 	}
 
@@ -390,6 +403,7 @@ func (c *Checker) fileExistsInContainer(ctx context.Context, containerID, path s
 	for i := 0; i < 10; i++ {
 		inspect, err := c.client.ContainerExecInspect(ctx, execResp.ID)
 		if err != nil {
+			log.Printf("[DEBUG] fileExistsInContainer %s %s: exec inspect failed: %v", containerID[:12], path, err)
 			return false
 		}
 		if !inspect.Running {
@@ -398,6 +412,7 @@ func (c *Checker) fileExistsInContainer(ctx context.Context, containerID, path s
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	log.Printf("[DEBUG] fileExistsInContainer %s %s: timeout", containerID[:12], path)
 	return false
 }
 
