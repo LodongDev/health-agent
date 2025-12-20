@@ -2,7 +2,17 @@
   "permissions": {
     "allow": [
       "Bash(go mod tidy:*)",
-      "Bash(go build:*)"
+      "Bash(go build:*)",
+      "Bash(dir \"C:\\\\Users\\\\cyj\\\\IdeaProjects\" /b)",
+      "Bash(findstr:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git tag:*)",
+      "Bash(git push:*)",
+      "Bash(curl:*)",
+      "Bash(cat:*)",
+      "Bash(dir:*)",
+      "Bash(del \"C:\\\\Users\\\\cyj\\\\IdeaProjects\\\\api\\\\service_monitoring_api\\\\src\\\\main\\\\resources\\\\application.yml\")"
     ]
   }
 }

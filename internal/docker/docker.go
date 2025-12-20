@@ -256,11 +256,18 @@ func (c *Checker) checkSpringApp(ctx context.Context, cont dockertypes.Container
 
 	endpoints := []string{"/actuator/health", "/health", "/"}
 	var lastElapsed int
+	var lastMsg string
+	var lastEndpoint string
+
 	for _, ep := range endpoints {
 		url := fmt.Sprintf("http://%s:%d%s", ip, port, ep)
 		status, msg, elapsed := c.httpCheck(url)
 		lastElapsed = elapsed
-		if status == types.StatusUp {
+		lastMsg = msg
+		lastEndpoint = ep
+
+		// UP 또는 WARN(느림) = 응답 받음 → 성공
+		if status != types.StatusDown {
 			state.Status = status
 			state.Message = fmt.Sprintf("%s -> %s", ep, msg)
 			state.Endpoint = ep
@@ -268,8 +275,9 @@ func (c *Checker) checkSpringApp(ctx context.Context, cont dockertypes.Container
 			return state
 		}
 	}
+	// 모든 endpoint 연결 실패
 	state.Status = types.StatusDown
-	state.Message = "모든 엔드포인트 체크 실패"
+	state.Message = fmt.Sprintf("%s -> %s", lastEndpoint, lastMsg)
 	state.ResponseTime = lastElapsed
 	return state
 }
@@ -293,11 +301,18 @@ func (c *Checker) checkAPIApp(ctx context.Context, cont dockertypes.Container, s
 
 	endpoints := []string{"/health", "/api/health", "/"}
 	var lastElapsed int
+	var lastMsg string
+	var lastEndpoint string
+
 	for _, ep := range endpoints {
 		url := fmt.Sprintf("http://%s:%d%s", ip, port, ep)
 		status, msg, elapsed := c.httpCheck(url)
 		lastElapsed = elapsed
-		if status == types.StatusUp {
+		lastMsg = msg
+		lastEndpoint = ep
+
+		// 응답 받으면 성공 (UP)
+		if status != types.StatusDown {
 			state.Status = status
 			state.Message = fmt.Sprintf("%s -> %s", ep, msg)
 			state.Endpoint = ep
@@ -305,8 +320,9 @@ func (c *Checker) checkAPIApp(ctx context.Context, cont dockertypes.Container, s
 			return state
 		}
 	}
+	// 모든 endpoint 연결 실패
 	state.Status = types.StatusDown
-	state.Message = "모든 엔드포인트 체크 실패"
+	state.Message = fmt.Sprintf("%s -> %s", lastEndpoint, lastMsg)
 	state.ResponseTime = lastElapsed
 	return state
 }
@@ -350,6 +366,8 @@ func (c *Checker) checkDBService(ctx context.Context, cont dockertypes.Container
 }
 
 // httpCheck HTTP 요청을 통해 상태를 확인하고 응답 시간을 반환
+// DOWN = 연결 실패 (timeout, connection refused)
+// UP = 응답 받음 (서버에서 responseTime 기반으로 WARN 판정)
 func (c *Checker) httpCheck(url string) (types.Status, string, int) {
 	log.Printf("[DEBUG] HTTP check: %s", url)
 	client := &http.Client{Timeout: c.timeout}
@@ -363,16 +381,10 @@ func (c *Checker) httpCheck(url string) (types.Status, string, int) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	log.Printf("[DEBUG] HTTP success: %s (%dms) - status %d", url, elapsed, resp.StatusCode)
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return types.StatusUp, fmt.Sprintf("%d OK", resp.StatusCode), elapsed
-	}
-	if resp.StatusCode >= 500 {
-		return types.StatusDown, fmt.Sprintf("%d %s", resp.StatusCode, string(body)), elapsed
-	}
-	return types.StatusWarn, fmt.Sprintf("%d %s", resp.StatusCode, resp.Status), elapsed
+	// 응답 받으면 UP (서버에서 responseTime 기준으로 WARN 판정)
+	return types.StatusUp, fmt.Sprintf("%d %s", resp.StatusCode, resp.Status), elapsed
 }
 
 func (c *Checker) getContainerIP(ctx context.Context, containerID string) string {
