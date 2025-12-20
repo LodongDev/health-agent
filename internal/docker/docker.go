@@ -599,6 +599,51 @@ func (c *Checker) checkWebApp(ctx context.Context, cont dockertypes.Container, s
 
 	url := fmt.Sprintf("http://%s:%d/", ip, port)
 	status, msg, elapsed := c.httpCheck(url)
+
+	if status != types.StatusDown {
+		state.Status = status
+		state.Message = msg
+		state.Endpoint = "/"
+		state.ResponseTime = elapsed
+		return state
+	}
+
+	// 연결 실패 시 컨테이너의 다른 노출 포트 시도
+	for _, p := range cont.Ports {
+		tryPort := int(p.PrivatePort)
+		if tryPort == port {
+			continue
+		}
+		fallbackURL := fmt.Sprintf("http://%s:%d/", ip, tryPort)
+		fbStatus, fbMsg, fbElapsed := c.httpCheck(fallbackURL)
+		if fbStatus != types.StatusDown {
+			state.Status = fbStatus
+			state.Message = fbMsg
+			state.Port = tryPort
+			state.Endpoint = "/"
+			state.ResponseTime = fbElapsed
+			return state
+		}
+	}
+
+	// 일반적인 웹 포트 시도 (Next.js, React 등 포함)
+	fallbackPorts := []int{3000, 8080, 80, 8000, 5000, 11242, 11240, 11241, 11243, 11244, 11245}
+	for _, fp := range fallbackPorts {
+		if fp == port {
+			continue
+		}
+		fallbackURL := fmt.Sprintf("http://%s:%d/", ip, fp)
+		fbStatus, fbMsg, fbElapsed := c.httpCheck(fallbackURL)
+		if fbStatus != types.StatusDown {
+			state.Status = fbStatus
+			state.Message = fbMsg
+			state.Port = fp
+			state.Endpoint = "/"
+			state.ResponseTime = fbElapsed
+			return state
+		}
+	}
+
 	state.Status = status
 	state.Message = msg
 	state.Endpoint = "/"
@@ -615,6 +660,7 @@ func (c *Checker) checkAPIApp(ctx context.Context, cont dockertypes.Container, s
 	var lastMsg string
 	var lastEndpoint string
 
+	// 1. 기본 포트로 시도
 	for _, ep := range endpoints {
 		url := fmt.Sprintf("http://%s:%d%s", ip, port, ep)
 		status, msg, elapsed := c.httpCheck(url)
@@ -622,7 +668,6 @@ func (c *Checker) checkAPIApp(ctx context.Context, cont dockertypes.Container, s
 		lastMsg = msg
 		lastEndpoint = ep
 
-		// 응답 받으면 성공 (UP)
 		if status != types.StatusDown {
 			state.Status = status
 			state.Message = msg
@@ -631,7 +676,43 @@ func (c *Checker) checkAPIApp(ctx context.Context, cont dockertypes.Container, s
 			return state
 		}
 	}
-	// 모든 endpoint 연결 실패
+
+	// 2. 기본 포트 실패 시 컨테이너의 다른 노출 포트 시도
+	for _, p := range cont.Ports {
+		tryPort := int(p.PrivatePort)
+		if tryPort == port {
+			continue
+		}
+		url := fmt.Sprintf("http://%s:%d/", ip, tryPort)
+		status, msg, elapsed := c.httpCheck(url)
+		if status != types.StatusDown {
+			state.Status = status
+			state.Message = msg
+			state.Endpoint = "/"
+			state.Port = tryPort
+			state.ResponseTime = elapsed
+			return state
+		}
+	}
+
+	// 3. 여전히 실패 시 일반적인 포트 시도 (최대 5개)
+	fallbackPorts := []int{8080, 3000, 8000, 5000, 80}
+	for _, fp := range fallbackPorts {
+		if fp == port {
+			continue
+		}
+		url := fmt.Sprintf("http://%s:%d/", ip, fp)
+		status, msg, elapsed := c.httpCheck(url)
+		if status != types.StatusDown {
+			state.Status = status
+			state.Message = msg
+			state.Endpoint = "/"
+			state.Port = fp
+			state.ResponseTime = elapsed
+			return state
+		}
+	}
+
 	state.Status = types.StatusDown
 	state.Message = lastMsg
 	state.Endpoint = lastEndpoint
