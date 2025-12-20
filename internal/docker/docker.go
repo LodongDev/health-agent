@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"runtime"
@@ -117,16 +118,22 @@ func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container
 	}
 
 	// 서비스 타입별 체크
+	log.Printf("[DEBUG] Container %s: type=%s, image=%s", name, svcType, cont.Image)
 	switch svcType {
 	case types.TypeAPIJava:
+		log.Printf("[DEBUG] %s -> checkSpringApp", name)
 		state = c.checkSpringApp(ctx, cont, state)
 	case types.TypeWebNginx, types.TypeWebApache, types.TypeWeb:
+		log.Printf("[DEBUG] %s -> checkWebApp", name)
 		state = c.checkWebApp(ctx, cont, state)
 	case types.TypeAPI, types.TypeAPIPython, types.TypeAPINode, types.TypeAPIGo:
+		log.Printf("[DEBUG] %s -> checkAPIApp", name)
 		state = c.checkAPIApp(ctx, cont, state)
 	case types.TypeMySQL, types.TypePostgreSQL, types.TypeRedis, types.TypeMongoDB:
+		log.Printf("[DEBUG] %s -> checkDBService", name)
 		state = c.checkDBService(ctx, cont, state)
 	default:
+		log.Printf("[DEBUG] %s -> default (no HTTP check)", name)
 		// running 상태만 확인
 		if cont.State == "running" {
 			state.Status = types.StatusUp
@@ -137,6 +144,7 @@ func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container
 		}
 		state.ResponseTime = int(time.Since(start).Milliseconds())
 	}
+	log.Printf("[DEBUG] %s: status=%s, responseTime=%dms, msg=%s", name, state.Status, state.ResponseTime, state.Message)
 	return state
 }
 
@@ -343,17 +351,20 @@ func (c *Checker) checkDBService(ctx context.Context, cont dockertypes.Container
 
 // httpCheck HTTP 요청을 통해 상태를 확인하고 응답 시간을 반환
 func (c *Checker) httpCheck(url string) (types.Status, string, int) {
+	log.Printf("[DEBUG] HTTP check: %s", url)
 	client := &http.Client{Timeout: c.timeout}
 	start := time.Now()
 	resp, err := client.Get(url)
 	elapsed := int(time.Since(start).Milliseconds())
 
 	if err != nil {
+		log.Printf("[DEBUG] HTTP failed: %s (%dms) - %v", url, elapsed, err)
 		return types.StatusDown, fmt.Sprintf("연결 실패: %v", err), elapsed
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	log.Printf("[DEBUG] HTTP success: %s (%dms) - status %d", url, elapsed, resp.StatusCode)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return types.StatusUp, fmt.Sprintf("%d OK", resp.StatusCode), elapsed
