@@ -218,37 +218,137 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 
 // detectTypeByFileStructure 컨테이너 내부 파일 구조를 확인하여 타입 판별
 func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceType {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// 확인할 파일 목록과 해당 타입
-	fileChecks := []struct {
-		paths    []string
-		fileType types.ServiceType
-	}{
-		// Java/Spring
-		{[]string{"/app/pom.xml", "/pom.xml", "/app/build.gradle", "/build.gradle"}, types.TypeAPIJava},
-		// Python
-		{[]string{"/app/requirements.txt", "/requirements.txt", "/app/pyproject.toml", "/pyproject.toml"}, types.TypeAPIPython},
-		// Node.js
-		{[]string{"/app/package.json", "/package.json"}, types.TypeAPINode},
-		// Go
-		{[]string{"/app/go.mod", "/go.mod"}, types.TypeAPIGo},
-		// Nginx
-		{[]string{"/etc/nginx/nginx.conf"}, types.TypeWebNginx},
-		// Apache
-		{[]string{"/etc/apache2/apache2.conf", "/etc/httpd/conf/httpd.conf"}, types.TypeWebApache},
+	// 1. Web Server 확인 (Nginx, Apache/httpd)
+	if c.fileExistsInContainer(ctx, containerID, "/etc/nginx/nginx.conf") {
+		return types.TypeWebNginx
+	}
+	if c.fileExistsInContainer(ctx, containerID, "/etc/apache2/apache2.conf") ||
+		c.fileExistsInContainer(ctx, containerID, "/etc/httpd/conf/httpd.conf") ||
+		c.fileExistsInContainer(ctx, containerID, "/usr/local/apache2/conf/httpd.conf") {
+		return types.TypeWebApache
 	}
 
-	for _, check := range fileChecks {
-		for _, path := range check.paths {
-			if c.fileExistsInContainer(ctx, containerID, path) {
-				return check.fileType
-			}
+	// 2. Next.js / React 확인 → WEB
+	if c.fileExistsInContainer(ctx, containerID, "/app/next.config.js") ||
+		c.fileExistsInContainer(ctx, containerID, "/app/next.config.mjs") ||
+		c.fileExistsInContainer(ctx, containerID, "/app/.next/BUILD_ID") ||
+		c.dirExistsInContainer(ctx, containerID, "/app/.next") {
+		return types.TypeWeb
+	}
+
+	// 3. Java/Spring 확인 → API_JAVA
+	if c.fileExistsInContainer(ctx, containerID, "/app/pom.xml") ||
+		c.fileExistsInContainer(ctx, containerID, "/pom.xml") ||
+		c.fileExistsInContainer(ctx, containerID, "/app/build.gradle") ||
+		c.fileExistsInContainer(ctx, containerID, "/build.gradle") {
+		return types.TypeAPIJava
+	}
+
+	// 4. Go 확인 → API_GO
+	if c.fileExistsInContainer(ctx, containerID, "/app/go.mod") ||
+		c.fileExistsInContainer(ctx, containerID, "/go.mod") {
+		return types.TypeAPIGo
+	}
+
+	// 5. Python 확인 - API vs MODULE 구분
+	hasPython := c.fileExistsInContainer(ctx, containerID, "/app/requirements.txt") ||
+		c.fileExistsInContainer(ctx, containerID, "/requirements.txt") ||
+		c.fileExistsInContainer(ctx, containerID, "/app/pyproject.toml") ||
+		c.fileExistsInContainer(ctx, containerID, "/pyproject.toml")
+
+	if hasPython {
+		// FastAPI, Flask, Django가 있으면 API
+		if c.fileExistsInContainer(ctx, containerID, "/app/main.py") &&
+			(c.fileContains(ctx, containerID, "/app/main.py", "fastapi") ||
+				c.fileContains(ctx, containerID, "/app/main.py", "flask") ||
+				c.fileContains(ctx, containerID, "/app/main.py", "django")) {
+			return types.TypeAPIPython
 		}
+		// 그 외 Python (AI/ML 등) → MODULE
+		return types.TypeModule
+	}
+
+	// 6. Node.js 확인 (package.json)
+	if c.fileExistsInContainer(ctx, containerID, "/app/package.json") ||
+		c.fileExistsInContainer(ctx, containerID, "/package.json") {
+		// package.json이 있지만 Next.js가 아니면 일반 Node API
+		return types.TypeAPINode
 	}
 
 	return types.TypeDocker
+}
+
+// dirExistsInContainer 컨테이너 내부에 디렉토리가 존재하는지 확인
+func (c *Checker) dirExistsInContainer(ctx context.Context, containerID, path string) bool {
+	if c.client == nil {
+		return false
+	}
+
+	execConfig := container.ExecOptions{
+		Cmd:          []string{"test", "-d", path},
+		AttachStdout: false,
+		AttachStderr: false,
+	}
+
+	execResp, err := c.client.ContainerExecCreate(ctx, containerID, execConfig)
+	if err != nil {
+		return false
+	}
+
+	err = c.client.ContainerExecStart(ctx, execResp.ID, container.ExecStartOptions{})
+	if err != nil {
+		return false
+	}
+
+	for i := 0; i < 10; i++ {
+		inspect, err := c.client.ContainerExecInspect(ctx, execResp.ID)
+		if err != nil {
+			return false
+		}
+		if !inspect.Running {
+			return inspect.ExitCode == 0
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// fileContains 컨테이너 내부 파일에 특정 문자열이 포함되어 있는지 확인
+func (c *Checker) fileContains(ctx context.Context, containerID, path, search string) bool {
+	if c.client == nil {
+		return false
+	}
+
+	execConfig := container.ExecOptions{
+		Cmd:          []string{"grep", "-qi", search, path},
+		AttachStdout: false,
+		AttachStderr: false,
+	}
+
+	execResp, err := c.client.ContainerExecCreate(ctx, containerID, execConfig)
+	if err != nil {
+		return false
+	}
+
+	err = c.client.ContainerExecStart(ctx, execResp.ID, container.ExecStartOptions{})
+	if err != nil {
+		return false
+	}
+
+	for i := 0; i < 10; i++ {
+		inspect, err := c.client.ContainerExecInspect(ctx, execResp.ID)
+		if err != nil {
+			return false
+		}
+		if !inspect.Running {
+			return inspect.ExitCode == 0
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 // fileExistsInContainer 컨테이너 내부에 파일이 존재하는지 확인

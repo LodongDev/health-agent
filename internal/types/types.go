@@ -33,7 +33,10 @@ const (
 	// Web
 	TypeWebNginx   ServiceType = "WEB_NGINX"    // Nginx
 	TypeWebApache  ServiceType = "WEB_APACHE"   // Apache HTTPD
-	TypeWeb        ServiceType = "WEB"          // 일반 Web
+	TypeWeb        ServiceType = "WEB"          // 일반 Web (React, Next.js 등)
+
+	// Module (AI/ML, 배치 프로그램 등)
+	TypeModule     ServiceType = "MODULE"       // Python AI/ML, 독립 모듈
 
 	// Container
 	TypeDocker     ServiceType = "CONTAINER"
