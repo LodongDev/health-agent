@@ -366,7 +366,8 @@ func (c *Checker) checkDBService(ctx context.Context, cont dockertypes.Container
 
 // httpCheck HTTP 요청을 통해 상태를 확인하고 응답 시간을 반환
 // DOWN = 연결 실패 (timeout, connection refused)
-// UP = 응답 받음 (서버에서 responseTime 기반으로 WARN 판정)
+// UP = 2xx 응답
+// WARN = 4xx/5xx 응답 (서버는 응답함, 확인 필요)
 func (c *Checker) httpCheck(url string) (types.Status, string, int) {
 	log.Printf("[DEBUG] HTTP check: %s", url)
 	client := &http.Client{Timeout: c.timeout}
@@ -380,10 +381,21 @@ func (c *Checker) httpCheck(url string) (types.Status, string, int) {
 	}
 	defer resp.Body.Close()
 
-	log.Printf("[DEBUG] HTTP success: %s (%dms) - status %d", url, elapsed, resp.StatusCode)
+	statusCode := resp.StatusCode
+	log.Printf("[DEBUG] HTTP response: %s (%dms) - status %d", url, elapsed, statusCode)
 
-	// 응답 받으면 UP (서버에서 responseTime 기준으로 WARN 판정)
-	return types.StatusUp, fmt.Sprintf("%d %s", resp.StatusCode, resp.Status), elapsed
+	// 2xx = 정상
+	if statusCode >= 200 && statusCode < 300 {
+		return types.StatusUp, fmt.Sprintf("%d OK", statusCode), elapsed
+	}
+
+	// 401/403 = 인증 필요 (서버는 살아있음)
+	if statusCode == 401 || statusCode == 403 {
+		return types.StatusWarn, fmt.Sprintf("%d 인증필요", statusCode), elapsed
+	}
+
+	// 4xx/5xx = 서버 응답함, 확인 필요
+	return types.StatusWarn, fmt.Sprintf("%d %s", statusCode, resp.Status), elapsed
 }
 
 func (c *Checker) getContainerIP(ctx context.Context, containerID string) string {
