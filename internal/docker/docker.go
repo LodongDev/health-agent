@@ -152,32 +152,10 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 	image := strings.ToLower(cont.Image)
 	name := strings.ToLower(cont.Names[0])
 
-	// 1. 라벨 기반 감지 (최우선)
-	if svcType, ok := cont.Labels["health.type"]; ok {
-		switch strings.ToLower(svcType) {
-		case "spring", "java", "api_java":
-			return types.TypeAPIJava
-		case "python", "fastapi", "flask", "django", "api_python":
-			return types.TypeAPIPython
-		case "node", "nodejs", "api_node":
-			return types.TypeAPINode
-		case "go", "golang", "api_go":
-			return types.TypeAPIGo
-		case "api":
-			return types.TypeAPI
-		case "web", "nginx":
-			return types.TypeWebNginx
-		case "apache":
-			return types.TypeWebApache
-		case "mysql":
-			return types.TypeMySQL
-		case "postgresql", "postgres":
-			return types.TypePostgreSQL
-		case "redis":
-			return types.TypeRedis
-		case "mongodb", "mongo":
-			return types.TypeMongoDB
-		}
+	// 1. 컨테이너 내부 파일 구조로 감지 (가장 정확)
+	if fileType := c.detectTypeByFileStructure(cont.ID); fileType != types.TypeDocker {
+		log.Printf("[DEBUG] %s: detected by file structure -> %s", name, fileType)
+		return fileType
 	}
 
 	// 2. 이미지 기반 감지
@@ -233,35 +211,6 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 	if strings.Contains(name, "-api") || strings.Contains(name, "_api") ||
 		strings.Contains(image, "-api") || strings.Contains(image, "_api") {
 		return types.TypeAPI
-	}
-
-	// 3. 포트 기반 감지
-	for _, p := range cont.Ports {
-		switch p.PrivatePort {
-		case 8080, 8081, 8082, 8000, 8888:
-			// API 서버 (구체적 타입은 위에서 결정 안되면 일반 API)
-			return types.TypeAPI
-		case 80, 443:
-			return types.TypeWeb
-		case 3306:
-			return types.TypeMySQL
-		case 5432:
-			return types.TypePostgreSQL
-		case 6379:
-			return types.TypeRedis
-		case 27017:
-			return types.TypeMongoDB
-		case 3000:
-			return types.TypeAPINode // Node.js 기본 포트
-		case 5000:
-			return types.TypeAPIPython // Flask 기본 포트
-		}
-	}
-
-	// 4. 컨테이너 내부 파일 구조로 감지 (최후의 수단)
-	if fileType := c.detectTypeByFileStructure(cont.ID); fileType != types.TypeDocker {
-		log.Printf("[DEBUG] %s: detected by file structure -> %s", name, fileType)
-		return fileType
 	}
 
 	return types.TypeDocker
