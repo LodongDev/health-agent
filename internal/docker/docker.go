@@ -268,7 +268,7 @@ func (c *Checker) checkSpringApp(ctx context.Context, cont dockertypes.Container
 		// UP 또는 WARN(느림) = 응답 받음 → 성공
 		if status != types.StatusDown {
 			state.Status = status
-			state.Message = fmt.Sprintf("%s -> %s", ep, msg)
+			state.Message = msg
 			state.Endpoint = ep
 			state.ResponseTime = elapsed
 			return state
@@ -276,7 +276,8 @@ func (c *Checker) checkSpringApp(ctx context.Context, cont dockertypes.Container
 	}
 	// 모든 endpoint 연결 실패
 	state.Status = types.StatusDown
-	state.Message = fmt.Sprintf("%s -> %s", lastEndpoint, lastMsg)
+	state.Message = lastMsg
+	state.Endpoint = lastEndpoint
 	state.ResponseTime = lastElapsed
 	return state
 }
@@ -313,7 +314,7 @@ func (c *Checker) checkAPIApp(ctx context.Context, cont dockertypes.Container, s
 		// 응답 받으면 성공 (UP)
 		if status != types.StatusDown {
 			state.Status = status
-			state.Message = fmt.Sprintf("%s -> %s", ep, msg)
+			state.Message = msg
 			state.Endpoint = ep
 			state.ResponseTime = elapsed
 			return state
@@ -321,7 +322,8 @@ func (c *Checker) checkAPIApp(ctx context.Context, cont dockertypes.Container, s
 	}
 	// 모든 endpoint 연결 실패
 	state.Status = types.StatusDown
-	state.Message = fmt.Sprintf("%s -> %s", lastEndpoint, lastMsg)
+	state.Message = lastMsg
+	state.Endpoint = lastEndpoint
 	state.ResponseTime = lastElapsed
 	return state
 }
