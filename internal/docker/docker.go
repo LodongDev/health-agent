@@ -3,7 +3,6 @@ package docker
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
