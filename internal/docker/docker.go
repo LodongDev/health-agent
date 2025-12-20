@@ -13,7 +13,6 @@ import (
 	"health-agent/internal/types"
 
 	dockertypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
@@ -301,7 +300,7 @@ func (c *Checker) dirExistsInContainer(ctx context.Context, containerID, path st
 		return false
 	}
 
-	execConfig := container.ExecOptions{
+	execConfig := dockertypes.ExecConfig{
 		Cmd:          []string{"test", "-d", path},
 		AttachStdout: false,
 		AttachStderr: false,
@@ -312,7 +311,7 @@ func (c *Checker) dirExistsInContainer(ctx context.Context, containerID, path st
 		return false
 	}
 
-	err = c.client.ContainerExecStart(ctx, execResp.ID, container.ExecStartOptions{})
+	err = c.client.ContainerExecStart(ctx, execResp.ID, dockertypes.ExecStartCheck{})
 	if err != nil {
 		return false
 	}
@@ -336,7 +335,7 @@ func (c *Checker) fileContains(ctx context.Context, containerID, path, search st
 		return false
 	}
 
-	execConfig := container.ExecOptions{
+	execConfig := dockertypes.ExecConfig{
 		Cmd:          []string{"grep", "-qi", search, path},
 		AttachStdout: false,
 		AttachStderr: false,
@@ -347,7 +346,7 @@ func (c *Checker) fileContains(ctx context.Context, containerID, path, search st
 		return false
 	}
 
-	err = c.client.ContainerExecStart(ctx, execResp.ID, container.ExecStartOptions{})
+	err = c.client.ContainerExecStart(ctx, execResp.ID, dockertypes.ExecStartCheck{})
 	if err != nil {
 		return false
 	}
@@ -371,7 +370,7 @@ func (c *Checker) fileExistsInContainer(ctx context.Context, containerID, path s
 		return false
 	}
 
-	execConfig := container.ExecOptions{
+	execConfig := dockertypes.ExecConfig{
 		Cmd:          []string{"test", "-f", path},
 		AttachStdout: false,
 		AttachStderr: false,
@@ -382,7 +381,7 @@ func (c *Checker) fileExistsInContainer(ctx context.Context, containerID, path s
 		return false
 	}
 
-	err = c.client.ContainerExecStart(ctx, execResp.ID, container.ExecStartOptions{})
+	err = c.client.ContainerExecStart(ctx, execResp.ID, dockertypes.ExecStartCheck{})
 	if err != nil {
 		return false
 	}
