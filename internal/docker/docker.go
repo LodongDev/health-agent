@@ -217,7 +217,7 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 
 // detectTypeByFileStructure 컨테이너 내부 파일 구조를 확인하여 타입 판별
 func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceType {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	log.Printf("[DEBUG] detectTypeByFileStructure: checking container %s", containerID[:12])
