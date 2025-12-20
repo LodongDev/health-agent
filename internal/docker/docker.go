@@ -201,6 +201,11 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 	if strings.Contains(image, "httpd") || strings.Contains(image, "apache") {
 		return types.TypeWebApache
 	}
+	// 컨테이너/이미지 이름에 -web 또는 _web 포함시 WEB으로 판정
+	if strings.Contains(name, "-web") || strings.Contains(name, "_web") ||
+		strings.Contains(image, "-web") || strings.Contains(image, "_web") {
+		return types.TypeWeb
+	}
 
 	// API - 언어/프레임워크 감지
 	if strings.Contains(image, "python") || strings.Contains(image, "fastapi") ||
@@ -216,11 +221,17 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 		strings.Contains(name, "go-") {
 		return types.TypeAPIGo
 	}
+	// Java/Spring 관련
 	if strings.Contains(image, "java") || strings.Contains(image, "spring") ||
 		strings.Contains(image, "openjdk") || strings.Contains(image, "jdk") ||
 		strings.Contains(image, "maven") || strings.Contains(image, "gradle") ||
-		strings.Contains(name, "spring") || strings.Contains(name, "-api") {
+		strings.Contains(name, "spring") {
 		return types.TypeAPIJava
+	}
+	// 컨테이너/이미지 이름에 -api 또는 _api 포함시 API로 판정
+	if strings.Contains(name, "-api") || strings.Contains(name, "_api") ||
+		strings.Contains(image, "-api") || strings.Contains(image, "_api") {
+		return types.TypeAPI
 	}
 
 	// 3. 포트 기반 감지
