@@ -106,21 +106,14 @@ func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container
 			}
 		}
 
-		// Docker 자체 헬스체크가 있으면 우선 사용
-		if inspect.State.Health != nil {
-			switch inspect.State.Health.Status {
-			case "healthy":
-				state.Status = types.StatusUp
-				state.Message = "Docker HEALTHCHECK: healthy"
-				state.ResponseTime = int(time.Since(start).Milliseconds())
-				return state
-			case "unhealthy":
-				state.Status = types.StatusDown
-				state.Message = "Docker HEALTHCHECK: unhealthy"
-				state.ResponseTime = int(time.Since(start).Milliseconds())
-				return state
-			}
+		// Docker HEALTHCHECK가 unhealthy면 바로 반환
+		if inspect.State.Health != nil && inspect.State.Health.Status == "unhealthy" {
+			state.Status = types.StatusDown
+			state.Message = "Docker HEALTHCHECK: unhealthy"
+			state.ResponseTime = int(time.Since(start).Milliseconds())
+			return state
 		}
+		// healthy인 경우에도 실제 HTTP 체크를 수행하여 응답시간 측정
 	}
 
 	// 서비스 타입별 체크
