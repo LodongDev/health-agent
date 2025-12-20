@@ -172,23 +172,37 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 		return types.TypeMongoDB
 	}
 
-	// Web servers
+	// Web servers (이미지 기반)
 	if strings.Contains(image, "nginx") {
 		return types.TypeWebNginx
 	}
 	if strings.Contains(image, "httpd") || strings.Contains(image, "apache") {
 		return types.TypeWebApache
 	}
-	// 컨테이너/이미지 이름에 -web 또는 _web 포함시 WEB으로 판정
-	if strings.Contains(name, "-web") || strings.Contains(name, "_web") ||
-		strings.Contains(image, "-web") || strings.Contains(image, "_web") {
-		return types.TypeWeb
+
+	// API - 이름에 -api가 포함되면 우선 API로 처리 (web-api 같은 경우 API 우선)
+	if strings.Contains(name, "-api") || strings.Contains(name, "_api") ||
+		strings.Contains(image, "-api") || strings.Contains(image, "_api") {
+		// Java/Spring 관련 추가 체크
+		if strings.Contains(image, "java") || strings.Contains(image, "spring") ||
+			strings.Contains(image, "openjdk") || strings.Contains(image, "jdk") ||
+			strings.Contains(name, "spring") {
+			return types.TypeAPIJava
+		}
+		// Python 관련 추가 체크
+		if strings.Contains(image, "python") || strings.Contains(name, "python") ||
+			strings.Contains(name, "fastapi") || strings.Contains(name, "flask") {
+			return types.TypeAPIPython
+		}
+		return types.TypeAPI
 	}
 
 	// API - 언어/프레임워크 감지
 	if strings.Contains(image, "python") || strings.Contains(image, "fastapi") ||
 		strings.Contains(image, "flask") || strings.Contains(image, "django") ||
-		strings.Contains(name, "python") || strings.Contains(name, "fastapi") {
+		strings.Contains(name, "python") || strings.Contains(name, "fastapi") ||
+		strings.Contains(name, "ocr") || strings.Contains(name, "-engine") ||
+		strings.Contains(name, "_engine") {
 		return types.TypeAPIPython
 	}
 	if strings.Contains(image, "node") || strings.Contains(image, "npm") ||
@@ -206,10 +220,11 @@ func (c *Checker) detectServiceType(cont dockertypes.Container) types.ServiceTyp
 		strings.Contains(name, "spring") {
 		return types.TypeAPIJava
 	}
-	// 컨테이너/이미지 이름에 -api 또는 _api 포함시 API로 판정
-	if strings.Contains(name, "-api") || strings.Contains(name, "_api") ||
-		strings.Contains(image, "-api") || strings.Contains(image, "_api") {
-		return types.TypeAPI
+
+	// 컨테이너/이미지 이름에 -web 또는 _web 포함시 WEB으로 판정 (API 체크 이후)
+	if strings.Contains(name, "-web") || strings.Contains(name, "_web") ||
+		strings.Contains(image, "-web") || strings.Contains(image, "_web") {
+		return types.TypeWeb
 	}
 
 	return types.TypeDocker
@@ -273,13 +288,25 @@ func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceTyp
 	}
 
 	// 8. Python
-	if files["python"] {
+	if files["python"] || files["python_api"] || files["python_module"] || files["ocr_ai"] {
+		// OCR/AI 관련 Python
+		if files["ocr_ai"] {
+			log.Printf("[DEBUG] %s: found OCR/AI Python -> API_PYTHON", containerID[:12])
+			return types.TypeAPIPython
+		}
+		// FastAPI/Flask/Django 등 API
 		if files["python_api"] {
 			log.Printf("[DEBUG] %s: found Python API", containerID[:12])
 			return types.TypeAPIPython
 		}
-		log.Printf("[DEBUG] %s: found Python MODULE", containerID[:12])
-		return types.TypeModule
+		// 일반 Python 모듈
+		if files["python_module"] {
+			log.Printf("[DEBUG] %s: found Python MODULE", containerID[:12])
+			return types.TypeModule
+		}
+		// requirements.txt만 있는 경우 (API로 가정)
+		log.Printf("[DEBUG] %s: found Python (requirements.txt) -> API_PYTHON", containerID[:12])
+		return types.TypeAPIPython
 	}
 
 	// 9. Node.js (package.json만 있는 경우)
@@ -291,25 +318,70 @@ func (c *Checker) detectTypeByFileStructure(containerID string) types.ServiceTyp
 	return types.TypeDocker
 }
 
-// checkFilesInContainer 단일 명령으로 여러 파일 존재 여부 확인
+// checkFilesInContainer 단일 명령으로 여러 파일 존재 여부 확인 (여러 경로 체크)
 func (c *Checker) checkFilesInContainer(ctx context.Context, containerID string) map[string]bool {
 	if c.client == nil {
 		return nil
 	}
 
-	// 모든 체크를 하나의 셸 스크립트로 실행
+	// 여러 경로에서 체크 (/app, /opt, /src, /home/*, WORKDIR 등)
 	script := `
+# 웹서버 설정
 echo -n "nginx:" && test -f /etc/nginx/nginx.conf && echo "1" || echo "0"
 echo -n "apache:" && (test -f /etc/apache2/apache2.conf || test -f /etc/httpd/conf/httpd.conf) && echo "1" || echo "0"
-echo -n "nextjs:" && (test -f /app/next.config.js || test -f /app/next.config.mjs || test -d /app/.next) && echo "1" || echo "0"
-echo -n "vite:" && (test -f /app/vite.config.ts || test -f /app/vite.config.js) && echo "1" || echo "0"
-echo -n "react_build:" && (test -f /app/build/index.html || test -f /app/dist/index.html) && echo "1" || echo "0"
-echo -n "react_src:" && (test -f /app/src/main.tsx || test -f /app/src/App.tsx || test -f /app/src/index.tsx) && echo "1" || echo "0"
-echo -n "java:" && (test -f /app/pom.xml || test -f /app/build.gradle || test -d /app/BOOT-INF || ls /app/*.jar 2>/dev/null | head -1 | grep -q .) && echo "1" || echo "0"
-echo -n "golang:" && test -f /app/go.mod && echo "1" || echo "0"
-echo -n "python:" && (test -f /app/requirements.txt || test -f /app/pyproject.toml) && echo "1" || echo "0"
-echo -n "python_api:" && test -f /app/main.py && grep -qiE "fastapi|flask|django" /app/main.py 2>/dev/null && echo "1" || echo "0"
-echo -n "package_json:" && test -f /app/package.json && echo "1" || echo "0"
+
+# Next.js (여러 경로 체크)
+echo -n "nextjs:" && (test -f /app/next.config.js || test -f /app/next.config.mjs || test -d /app/.next || \
+  test -f /opt/next.config.js || test -d /opt/.next || \
+  test -f /src/next.config.js || test -d /src/.next) && echo "1" || echo "0"
+
+# Vite (여러 경로)
+echo -n "vite:" && (test -f /app/vite.config.ts || test -f /app/vite.config.js || \
+  test -f /opt/vite.config.ts || test -f /opt/vite.config.js || \
+  test -f /src/vite.config.ts || test -f /src/vite.config.js) && echo "1" || echo "0"
+
+# React build output
+echo -n "react_build:" && (test -f /app/build/index.html || test -f /app/dist/index.html || \
+  test -f /usr/share/nginx/html/index.html || test -f /var/www/html/index.html) && echo "1" || echo "0"
+
+# React source
+echo -n "react_src:" && (test -f /app/src/main.tsx || test -f /app/src/App.tsx || test -f /app/src/index.tsx || \
+  test -f /opt/src/main.tsx || test -f /opt/src/App.tsx) && echo "1" || echo "0"
+
+# Java/Spring (jar, pom.xml, BOOT-INF 등)
+echo -n "java:" && (test -f /app/pom.xml || test -f /app/build.gradle || test -d /app/BOOT-INF || \
+  test -d /BOOT-INF || ls /*.jar 2>/dev/null | head -1 | grep -q . || ls /app/*.jar 2>/dev/null | head -1 | grep -q . || \
+  test -f /opt/pom.xml || test -d /opt/BOOT-INF) && echo "1" || echo "0"
+
+# Go
+echo -n "golang:" && (test -f /app/go.mod || test -f /opt/go.mod || test -f /src/go.mod) && echo "1" || echo "0"
+
+# Python (requirements.txt 또는 pyproject.toml)
+echo -n "python:" && (test -f /app/requirements.txt || test -f /app/pyproject.toml || \
+  test -f /opt/requirements.txt || test -f /opt/pyproject.toml || \
+  test -f /requirements.txt || test -f /pyproject.toml || \
+  find /home -name "requirements.txt" -maxdepth 3 2>/dev/null | head -1 | grep -q .) && echo "1" || echo "0"
+
+# Python API (main.py, app.py에서 FastAPI/Flask/Django import 확인)
+echo -n "python_api:" && ( \
+  (test -f /app/main.py && grep -qiE "fastapi|flask|django|uvicorn" /app/main.py 2>/dev/null) || \
+  (test -f /app/app.py && grep -qiE "fastapi|flask|django|uvicorn" /app/app.py 2>/dev/null) || \
+  (test -f /opt/main.py && grep -qiE "fastapi|flask|django|uvicorn" /opt/main.py 2>/dev/null) || \
+  (test -f /main.py && grep -qiE "fastapi|flask|django|uvicorn" /main.py 2>/dev/null) || \
+  test -f /app/manage.py) && echo "1" || echo "0"
+
+# Python Module (API가 아닌 Python 스크립트)
+echo -n "python_module:" && ( \
+  (test -f /app/main.py && ! grep -qiE "fastapi|flask|django|uvicorn" /app/main.py 2>/dev/null) || \
+  (test -f /opt/main.py && ! grep -qiE "fastapi|flask|django|uvicorn" /opt/main.py 2>/dev/null)) && echo "1" || echo "0"
+
+# package.json
+echo -n "package_json:" && (test -f /app/package.json || test -f /opt/package.json || test -f /src/package.json) && echo "1" || echo "0"
+
+# OCR/AI 관련 (tesseract, opencv, torch 등)
+echo -n "ocr_ai:" && (which tesseract >/dev/null 2>&1 || python -c "import cv2" 2>/dev/null || \
+  grep -qiE "tesseract|opencv|paddleocr|easyocr|torch|tensorflow" /app/requirements.txt 2>/dev/null || \
+  grep -qiE "tesseract|opencv|paddleocr|easyocr|torch|tensorflow" /requirements.txt 2>/dev/null) && echo "1" || echo "0"
 `
 
 	execConfig := dockertypes.ExecConfig{
