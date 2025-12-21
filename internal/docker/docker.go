@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -16,6 +17,21 @@ import (
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
 )
+
+// getMachineID 서버 고유 ID 반환 (machine-id 앞 8자리)
+func getMachineID() string {
+	// Linux: /etc/machine-id 사용
+	if runtime.GOOS == "linux" {
+		if data, err := os.ReadFile("/etc/machine-id"); err == nil {
+			machineID := strings.TrimSpace(string(data))
+			if len(machineID) >= 8 {
+				return machineID[:8]
+			}
+		}
+	}
+	// Windows 또는 machine-id 없는 경우: IP 기반
+	return strings.ReplaceAll(config.GetLocalIP(), ".", "-")
+}
 
 type Checker struct {
 	client  *client.Client
@@ -135,8 +151,10 @@ func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container
 	svcType := c.detectServiceType(cont)
 	start := time.Now()
 
+	// 서비스 ID = {machineId}-{containerName} (서버 고유, 재설치/재시작 무관)
+	machineID := getMachineID()
 	state := types.ServiceState{
-		ID:        fmt.Sprintf("docker-%s", name), // 컨테이너 이름 사용 (재시작해도 동일)
+		ID:        fmt.Sprintf("%s-%s", machineID, name),
 		Name:      name,
 		Type:      svcType,
 		CheckedAt: time.Now(),
