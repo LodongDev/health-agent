@@ -19,7 +19,7 @@ import (
 	"health-agent/internal/wsclient"
 )
 
-const version = "1.13.0"
+const version = "1.14.0"
 
 const serviceFile = `[Unit]
 Description=Health Agent - Service Health Check Agent
@@ -55,6 +55,8 @@ func main() {
 		cmdLxd()
 	case "ignore":
 		cmdIgnore()
+	case "logs":
+		cmdLogs()
 	case "version", "-v", "--version":
 		fmt.Printf("Health Agent v%s\n", version)
 	case "help", "-h", "--help":
@@ -88,6 +90,10 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("  lxd       LXD container + OS service monitoring (planned)")
 	fmt.Println()
+	fmt.Println("  logs      View service logs")
+	fmt.Println("            -f, --follow     Follow log output (Ctrl+C to exit)")
+	fmt.Println("            -n <lines>       Number of lines to show (default: 50)")
+	fmt.Println()
 	fmt.Println("  ignore    Manage ignore list (skip monitoring)")
 	fmt.Println("            add <pattern>    Add to ignore list")
 	fmt.Println("            remove <pattern> Remove from ignore list (별칭: rm)")
@@ -114,6 +120,56 @@ func printUsage() {
 	fmt.Println("  health-agent ignore add \"*-dev\"      # Ends with -dev")
 	fmt.Println("  health-agent ignore add \"*test*\"     # Contains test")
 	fmt.Println("  health-agent ignore list             # Show ignore list")
+	fmt.Println("  health-agent logs                    # Show last 50 lines")
+	fmt.Println("  health-agent logs -f                 # Follow logs")
+}
+
+func cmdLogs() {
+	if runtime.GOOS == "windows" {
+		fmt.Println("[ERROR] logs command is only available on Linux")
+		return
+	}
+
+	follow := false
+	lines := "50"
+
+	for i := 2; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "-f", "--follow":
+			follow = true
+		case "-n":
+			if i+1 < len(os.Args) {
+				lines = os.Args[i+1]
+				i++
+			}
+		}
+	}
+
+	var cmd *exec.Cmd
+	if follow {
+		fmt.Println("Showing logs (Ctrl+C to exit)...")
+		fmt.Println("─────────────────────────────────")
+		cmd = exec.Command("journalctl", "-u", "health-agent", "-f", "-n", lines, "--no-pager")
+	} else {
+		cmd = exec.Command("journalctl", "-u", "health-agent", "-n", lines, "--no-pager")
+	}
+
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	// Ctrl+C 시그널 처리
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+	}()
+
+	cmd.Run()
 }
 
 func cmdIgnore() {
