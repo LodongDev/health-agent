@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"health-agent/internal/config"
 	"health-agent/internal/types"
 
 	dockertypes "github.com/docker/docker/api/types"
@@ -64,12 +65,69 @@ func (c *Checker) CheckAll(ctx context.Context) ([]types.ServiceState, error) {
 		return nil, err
 	}
 
+	// 무시 목록 로드
+	ignoreList := config.GetIgnoreList()
+
 	var results []types.ServiceState
 	for _, cont := range containers {
+		name := strings.TrimPrefix(cont.Names[0], "/")
+
+		// 무시 목록에 있으면 건너뛰기
+		if isInIgnoreList(name, ignoreList) {
+			log.Printf("[INFO] Skipping ignored container: %s", name)
+			continue
+		}
+
 		state := c.checkContainer(ctx, cont)
 		results = append(results, state)
 	}
 	return results, nil
+}
+
+// isInIgnoreList 컨테이너 이름이 무시 목록에 있는지 확인
+// 패턴 지원:
+//   - "nginx-dev"  : 정확히 일치
+//   - "dev-*"      : dev-로 시작하는 모든 컨테이너
+//   - "*-dev"      : -dev로 끝나는 모든 컨테이너
+//   - "*test*"     : test를 포함하는 모든 컨테이너
+func isInIgnoreList(name string, ignoreList []string) bool {
+	for _, pattern := range ignoreList {
+		if matchPattern(name, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchPattern 와일드카드 패턴 매칭
+func matchPattern(name, pattern string) bool {
+	// 정확히 일치
+	if pattern == name {
+		return true
+	}
+
+	hasPrefix := strings.HasPrefix(pattern, "*")
+	hasSuffix := strings.HasSuffix(pattern, "*")
+
+	// *test* : 포함
+	if hasPrefix && hasSuffix && len(pattern) > 2 {
+		substr := pattern[1 : len(pattern)-1]
+		return strings.Contains(name, substr)
+	}
+
+	// *-dev : 접미사 매칭
+	if hasPrefix && !hasSuffix {
+		suffix := pattern[1:]
+		return strings.HasSuffix(name, suffix)
+	}
+
+	// dev-* : 접두사 매칭
+	if !hasPrefix && hasSuffix {
+		prefix := pattern[:len(pattern)-1]
+		return strings.HasPrefix(name, prefix)
+	}
+
+	return false
 }
 
 func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container) types.ServiceState {

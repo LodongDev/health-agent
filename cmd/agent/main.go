@@ -19,7 +19,7 @@ import (
 	"health-agent/internal/wsclient"
 )
 
-const version = "1.11.10"
+const version = "1.12.0"
 
 const serviceFile = `[Unit]
 Description=Health Agent - Service Health Check Agent
@@ -53,6 +53,8 @@ func main() {
 		cmdDocker()
 	case "lxd":
 		cmdLxd()
+	case "ignore":
+		cmdIgnore()
 	case "version", "-v", "--version":
 		fmt.Printf("Health Agent v%s\n", version)
 	case "help", "-h", "--help":
@@ -86,6 +88,18 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("  lxd       LXD container + OS service monitoring (planned)")
 	fmt.Println()
+	fmt.Println("  ignore    Manage ignore list (skip monitoring)")
+	fmt.Println("            add <pattern>    Add to ignore list")
+	fmt.Println("            remove <pattern> Remove from ignore list (별칭: rm)")
+	fmt.Println("            list             Show ignore list (별칭: ls)")
+	fmt.Println("            help             Show ignore help")
+	fmt.Println()
+	fmt.Println("            Patterns:")
+	fmt.Println("              nginx-dev      Exact match (정확히 일치)")
+	fmt.Println("              dev-*          Prefix match (접두사)")
+	fmt.Println("              *-dev          Suffix match (접미사)")
+	fmt.Println("              *test*         Contains match (포함)")
+	fmt.Println()
 	fmt.Println("  version   Version info")
 	fmt.Println("  help      Help")
 	fmt.Println()
@@ -95,6 +109,109 @@ func printUsage() {
 	fmt.Println("  health-agent docker --foreground # Run in foreground")
 	fmt.Println("  health-agent docker --stop       # Stop service")
 	fmt.Println("  health-agent docker --uninstall  # Remove service")
+	fmt.Println("  health-agent ignore add nginx-dev    # Exact match")
+	fmt.Println("  health-agent ignore add \"dev-*\"      # Starts with dev-")
+	fmt.Println("  health-agent ignore add \"*-dev\"      # Ends with -dev")
+	fmt.Println("  health-agent ignore add \"*test*\"     # Contains test")
+	fmt.Println("  health-agent ignore list             # Show ignore list")
+}
+
+func cmdIgnore() {
+	if len(os.Args) < 3 {
+		// 기본값: list
+		showIgnoreList()
+		return
+	}
+
+	switch os.Args[2] {
+	case "help", "-h", "--help":
+		printIgnoreHelp()
+		return
+	case "add":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "[ERROR] Container name required")
+			fmt.Fprintln(os.Stderr, "Usage: health-agent ignore add <container-name>")
+			os.Exit(1)
+		}
+		name := os.Args[3]
+		if err := config.AddToIgnoreList(name); err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("[OK] '%s' added to ignore list\n", name)
+		showIgnoreList()
+
+	case "remove", "rm", "delete":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "[ERROR] Container name required")
+			fmt.Fprintln(os.Stderr, "Usage: health-agent ignore remove <container-name>")
+			os.Exit(1)
+		}
+		name := os.Args[3]
+		if err := config.RemoveFromIgnoreList(name); err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("[OK] '%s' removed from ignore list\n", name)
+		showIgnoreList()
+
+	case "list", "ls":
+		showIgnoreList()
+
+	default:
+		fmt.Fprintf(os.Stderr, "[ERROR] Unknown subcommand: %s\n", os.Args[2])
+		fmt.Fprintln(os.Stderr, "Usage: health-agent ignore [add|remove|list] <name>")
+		os.Exit(1)
+	}
+}
+
+func showIgnoreList() {
+	list := config.GetIgnoreList()
+	if len(list) == 0 {
+		fmt.Println("Ignore list: (empty)")
+		fmt.Println("Use 'health-agent ignore add <name>' to add containers")
+		return
+	}
+
+	fmt.Printf("Ignore list (%d items):\n", len(list))
+	for i, name := range list {
+		fmt.Printf("  %d. %s\n", i+1, name)
+	}
+}
+
+func printIgnoreHelp() {
+	fmt.Println("Ignore List Management")
+	fmt.Println("======================")
+	fmt.Println()
+	fmt.Println("모니터링에서 제외할 컨테이너를 관리합니다.")
+	fmt.Println("무시 목록에 있는 컨테이너는 수집되지 않습니다.")
+	fmt.Println()
+	fmt.Println("Usage:")
+	fmt.Println("  health-agent ignore <command> [pattern]")
+	fmt.Println()
+	fmt.Println("Commands:")
+	fmt.Println("  add <pattern>     무시 목록에 추가")
+	fmt.Println("  remove <pattern>  무시 목록에서 제거 (별칭: rm, delete)")
+	fmt.Println("  list              무시 목록 조회 (별칭: ls)")
+	fmt.Println("  help              이 도움말 표시")
+	fmt.Println()
+	fmt.Println("Patterns:")
+	fmt.Println("  nginx-dev         정확히 일치하는 컨테이너만")
+	fmt.Println("  dev-*             'dev-'로 시작하는 모든 컨테이너")
+	fmt.Println("  *-dev             '-dev'로 끝나는 모든 컨테이너")
+	fmt.Println("  *test*            'test'를 포함하는 모든 컨테이너")
+	fmt.Println()
+	fmt.Println("Examples:")
+	fmt.Println("  health-agent ignore add nginx-dev")
+	fmt.Println("  health-agent ignore add \"dev-*\"")
+	fmt.Println("  health-agent ignore add \"*test*\"")
+	fmt.Println("  health-agent ignore remove nginx-dev")
+	fmt.Println("  health-agent ignore list")
+	fmt.Println()
+	fmt.Println("Notes:")
+	fmt.Println("  - 설정은 /etc/health-agent/config.json에 저장됩니다")
+	fmt.Println("  - 서비스 재시작 없이 즉시 적용됩니다")
+	fmt.Println("  - 와일드카드 패턴 사용 시 따옴표로 감싸주세요")
 }
 
 func cmdConfig() {
@@ -163,6 +280,12 @@ func cmdStatus() {
 		} else {
 			fmt.Println("Service: Not installed")
 		}
+	}
+
+	// 무시 목록 표시
+	ignoreList := config.GetIgnoreList()
+	if len(ignoreList) > 0 {
+		fmt.Printf("Ignore: %d containers (%s)\n", len(ignoreList), strings.Join(ignoreList, ", "))
 	}
 }
 

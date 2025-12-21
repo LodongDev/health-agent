@@ -20,8 +20,9 @@ const (
 
 // AgentConfig 에이전트 설정
 type AgentConfig struct {
-	APIKey string `json:"apiKey"`
-	Name   string `json:"name,omitempty"`
+	APIKey     string   `json:"apiKey"`
+	Name       string   `json:"name,omitempty"`
+	IgnoreList []string `json:"ignoreList,omitempty"` // 무시할 컨테이너 이름 목록
 }
 
 // getConfigDir 설정 디렉토리 경로
@@ -106,6 +107,69 @@ func LoadOrCreateAgentID() string {
 	os.WriteFile(idFile, []byte(id), 0644)
 
 	return id
+}
+
+// AddToIgnoreList 무시 목록에 추가
+func AddToIgnoreList(name string) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		// 설정이 없으면 새로 생성
+		cfg = &AgentConfig{}
+	}
+
+	// 이미 있는지 확인
+	for _, n := range cfg.IgnoreList {
+		if n == name {
+			return fmt.Errorf("'%s'는 이미 무시 목록에 있습니다", name)
+		}
+	}
+
+	cfg.IgnoreList = append(cfg.IgnoreList, name)
+	return SaveConfig(cfg)
+}
+
+// RemoveFromIgnoreList 무시 목록에서 제거
+func RemoveFromIgnoreList(name string) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+
+	found := false
+	newList := []string{}
+	for _, n := range cfg.IgnoreList {
+		if n == name {
+			found = true
+		} else {
+			newList = append(newList, n)
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("'%s'는 무시 목록에 없습니다", name)
+	}
+
+	cfg.IgnoreList = newList
+	return SaveConfig(cfg)
+}
+
+// GetIgnoreList 무시 목록 조회
+func GetIgnoreList() []string {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return []string{}
+	}
+	return cfg.IgnoreList
+}
+
+// IsIgnored 무시 대상인지 확인
+func IsIgnored(name string) bool {
+	for _, n := range GetIgnoreList() {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // GetLocalIP 로컬 IP 조회 (기본 게이트웨이로 나가는 IP)
