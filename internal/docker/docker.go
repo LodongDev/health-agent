@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"net"
@@ -673,14 +674,22 @@ func (c *Checker) checkWebApp(ctx context.Context, cont dockertypes.Container, s
 	ip := c.getContainerIP(ctx, cont.ID)
 	port := c.getHTTPPort(cont)
 
-	url := fmt.Sprintf("http://%s:%d/", ip, port)
-	status, msg, elapsed := c.httpCheck(url)
+	// HTTPS 포트인 경우 HTTPS로 체크
+	protocol := "http"
+	if port == 443 {
+		protocol = "https"
+	}
+
+	url := fmt.Sprintf("%s://%s:%d/", protocol, ip, port)
+	status, msg, elapsed, sslError, sslMessage := c.httpCheckWithSSL(url)
 
 	if status != types.StatusDown {
 		state.Status = status
 		state.Message = msg
 		state.Endpoint = "/"
 		state.ResponseTime = elapsed
+		state.SSLError = sslError
+		state.SSLMessage = sslMessage
 		return state
 	}
 
@@ -690,32 +699,44 @@ func (c *Checker) checkWebApp(ctx context.Context, cont dockertypes.Container, s
 		if tryPort == port {
 			continue
 		}
-		fallbackURL := fmt.Sprintf("http://%s:%d/", ip, tryPort)
-		fbStatus, fbMsg, fbElapsed := c.httpCheck(fallbackURL)
+		tryProtocol := "http"
+		if tryPort == 443 {
+			tryProtocol = "https"
+		}
+		fallbackURL := fmt.Sprintf("%s://%s:%d/", tryProtocol, ip, tryPort)
+		fbStatus, fbMsg, fbElapsed, fbSSLError, fbSSLMessage := c.httpCheckWithSSL(fallbackURL)
 		if fbStatus != types.StatusDown {
 			state.Status = fbStatus
 			state.Message = fbMsg
 			state.Port = tryPort
 			state.Endpoint = "/"
 			state.ResponseTime = fbElapsed
+			state.SSLError = fbSSLError
+			state.SSLMessage = fbSSLMessage
 			return state
 		}
 	}
 
 	// 일반적인 웹 포트 시도 (Next.js, React 등 포함)
-	fallbackPorts := []int{3000, 8080, 80, 8000, 5000, 11242, 11240, 11241, 11243, 11244, 11245}
+	fallbackPorts := []int{3000, 8080, 80, 443, 8000, 5000, 11242, 11240, 11241, 11243, 11244, 11245}
 	for _, fp := range fallbackPorts {
 		if fp == port {
 			continue
 		}
-		fallbackURL := fmt.Sprintf("http://%s:%d/", ip, fp)
-		fbStatus, fbMsg, fbElapsed := c.httpCheck(fallbackURL)
+		tryProtocol := "http"
+		if fp == 443 {
+			tryProtocol = "https"
+		}
+		fallbackURL := fmt.Sprintf("%s://%s:%d/", tryProtocol, ip, fp)
+		fbStatus, fbMsg, fbElapsed, fbSSLError, fbSSLMessage := c.httpCheckWithSSL(fallbackURL)
 		if fbStatus != types.StatusDown {
 			state.Status = fbStatus
 			state.Message = fbMsg
 			state.Port = fp
 			state.Endpoint = "/"
 			state.ResponseTime = fbElapsed
+			state.SSLError = fbSSLError
+			state.SSLMessage = fbSSLMessage
 			return state
 		}
 	}
@@ -724,6 +745,8 @@ func (c *Checker) checkWebApp(ctx context.Context, cont dockertypes.Container, s
 	state.Message = msg
 	state.Endpoint = "/"
 	state.ResponseTime = elapsed
+	state.SSLError = sslError
+	state.SSLMessage = sslMessage
 	return state
 }
 
@@ -1025,33 +1048,92 @@ func (c *Checker) checkTCPPort(ip string, port int, state types.ServiceState) ty
 // UP = 2xx 응답
 // WARN = 4xx/5xx 응답 (서버는 응답함, 확인 필요)
 func (c *Checker) httpCheck(url string) (types.Status, string, int) {
+	status, msg, elapsed, _, _ := c.httpCheckWithSSL(url)
+	return status, msg, elapsed
+}
+
+// httpCheckWithSSL HTTP 요청을 통해 상태를 확인하고 SSL 오류 정보도 반환
+func (c *Checker) httpCheckWithSSL(url string) (types.Status, string, int, bool, string) {
 	log.Printf("[DEBUG] HTTP check: %s", url)
-	client := &http.Client{Timeout: c.timeout}
+	var sslError bool
+	var sslMessage string
+
+	// HTTPS URL인 경우 SSL 인증서 검증
+	if strings.HasPrefix(url, "https://") {
+		sslError, sslMessage = c.checkSSL(url)
+	}
+
+	// InsecureSkipVerify로 실제 서비스 상태 확인
+	client := &http.Client{
+		Timeout: c.timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 	start := time.Now()
 	resp, err := client.Get(url)
 	elapsed := int(time.Since(start).Milliseconds())
 
 	if err != nil {
 		log.Printf("[DEBUG] HTTP failed: %s (%dms) - %v", url, elapsed, err)
-		return types.StatusDown, fmt.Sprintf("연결 실패: %v", err), elapsed
+		return types.StatusDown, fmt.Sprintf("연결 실패: %v", err), elapsed, sslError, sslMessage
 	}
 	defer resp.Body.Close()
 
 	statusCode := resp.StatusCode
 	log.Printf("[DEBUG] HTTP response: %s (%dms) - status %d", url, elapsed, statusCode)
 
-	// 2xx = 정상
+	// 2xx = 정상 (SSL 오류가 있으면 WARN)
 	if statusCode >= 200 && statusCode < 300 {
-		return types.StatusUp, fmt.Sprintf("%d OK", statusCode), elapsed
+		if sslError {
+			return types.StatusWarn, fmt.Sprintf("%d OK (SSL 오류)", statusCode), elapsed, sslError, sslMessage
+		}
+		return types.StatusUp, fmt.Sprintf("%d OK", statusCode), elapsed, sslError, sslMessage
 	}
 
 	// 401/403 = 인증 필요 (서버는 살아있음)
 	if statusCode == 401 || statusCode == 403 {
-		return types.StatusWarn, fmt.Sprintf("%d 인증필요", statusCode), elapsed
+		return types.StatusWarn, fmt.Sprintf("%d 인증필요", statusCode), elapsed, sslError, sslMessage
 	}
 
 	// 4xx/5xx = 서버 응답함, 확인 필요
-	return types.StatusWarn, fmt.Sprintf("%d %s", statusCode, resp.Status), elapsed
+	return types.StatusWarn, fmt.Sprintf("%d %s", statusCode, resp.Status), elapsed, sslError, sslMessage
+}
+
+// checkSSL SSL 인증서 검증
+func (c *Checker) checkSSL(url string) (bool, string) {
+	client := &http.Client{
+		Timeout: c.timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+		},
+	}
+
+	resp, err := client.Head(url)
+	if err != nil {
+		errStr := err.Error()
+		// SSL 인증서 관련 오류 감지
+		if strings.Contains(errStr, "certificate") ||
+			strings.Contains(errStr, "x509") ||
+			strings.Contains(errStr, "tls") ||
+			strings.Contains(errStr, "SSL") {
+
+			if strings.Contains(errStr, "expired") {
+				return true, "SSL 인증서 만료"
+			} else if strings.Contains(errStr, "self signed") || strings.Contains(errStr, "self-signed") {
+				return true, "자체 서명 인증서"
+			} else if strings.Contains(errStr, "unknown authority") {
+				return true, "신뢰할 수 없는 인증 기관"
+			} else if strings.Contains(errStr, "hostname") || strings.Contains(errStr, "doesn't match") {
+				return true, "SSL 인증서 도메인 불일치"
+			} else {
+				return true, "SSL 인증서 오류"
+			}
+		}
+		return false, ""
+	}
+	defer resp.Body.Close()
+	return false, ""
 }
 
 func (c *Checker) getContainerIP(ctx context.Context, containerID string) string {

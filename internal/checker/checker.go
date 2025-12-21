@@ -16,9 +16,10 @@ import (
 
 // Checker 헬스체크 수행
 type Checker struct {
-	timeout     time.Duration
-	labelPrefix string
-	httpClient  *http.Client
+	timeout           time.Duration
+	labelPrefix       string
+	httpClient        *http.Client // InsecureSkipVerify용 (서비스 상태 확인)
+	httpClientSecure  *http.Client // SSL 검증용
 }
 
 // New Checker 생성
@@ -26,10 +27,18 @@ func New(timeout time.Duration, labelPrefix string) *Checker {
 	return &Checker{
 		timeout:     timeout,
 		labelPrefix: labelPrefix,
+		// 서비스 상태 확인용 (인증서 무시)
 		httpClient: &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		},
+		// SSL 인증서 검증용
+		httpClientSecure: &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
 			},
 		},
 	}
@@ -240,14 +249,23 @@ func (c *Checker) checkContainerOnly(container types.ContainerInfo) types.Health
 
 func (c *Checker) httpGet(ctx context.Context, url string) types.HealthResult {
 	start := time.Now()
+	var sslError bool
+	var sslMessage string
+
+	// HTTPS URL인 경우 먼저 SSL 인증서 검증
+	if strings.HasPrefix(url, "https://") {
+		sslError, sslMessage = c.checkSSLCert(ctx, url)
+	}
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return types.HealthResult{
-			Status:    types.StatusDown,
-			Message:   err.Error(),
-			CheckedAt: time.Now(),
+			Status:     types.StatusDown,
+			Message:    err.Error(),
+			CheckedAt:  time.Now(),
+			SSLError:   sslError,
+			SSLMessage: sslMessage,
 		}
 	}
 	defer resp.Body.Close()
@@ -259,11 +277,19 @@ func (c *Checker) httpGet(ctx context.Context, url string) types.HealthResult {
 		// JSON 파싱 시도
 		body, _ := io.ReadAll(resp.Body)
 		status := c.parseHealthJSON(body)
+
+		// SSL 오류가 있으면 WARN으로 표시 (서비스는 동작하지만 인증서 문제)
+		if sslError && status == types.StatusUp {
+			status = types.StatusWarn
+		}
+
 		return types.HealthResult{
 			Status:       status,
 			Message:      fmt.Sprintf("HTTP %d", resp.StatusCode),
 			ResponseTime: responseTime,
 			CheckedAt:    time.Now(),
+			SSLError:     sslError,
+			SSLMessage:   sslMessage,
 		}
 	}
 
@@ -273,6 +299,8 @@ func (c *Checker) httpGet(ctx context.Context, url string) types.HealthResult {
 			Message:      fmt.Sprintf("HTTP %d", resp.StatusCode),
 			ResponseTime: responseTime,
 			CheckedAt:    time.Now(),
+			SSLError:     sslError,
+			SSLMessage:   sslMessage,
 		}
 	}
 
@@ -281,7 +309,48 @@ func (c *Checker) httpGet(ctx context.Context, url string) types.HealthResult {
 		Message:      fmt.Sprintf("HTTP %d", resp.StatusCode),
 		ResponseTime: responseTime,
 		CheckedAt:    time.Now(),
+		SSLError:     sslError,
+		SSLMessage:   sslMessage,
 	}
+}
+
+// checkSSLCert SSL 인증서 검증
+func (c *Checker) checkSSLCert(ctx context.Context, url string) (hasError bool, message string) {
+	req, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)
+	if err != nil {
+		return false, ""
+	}
+
+	resp, err := c.httpClientSecure.Do(req)
+	if err != nil {
+		errStr := err.Error()
+
+		// SSL 인증서 관련 오류 감지
+		if strings.Contains(errStr, "certificate") ||
+			strings.Contains(errStr, "x509") ||
+			strings.Contains(errStr, "tls") ||
+			strings.Contains(errStr, "SSL") {
+
+			// 오류 메시지 한글화
+			if strings.Contains(errStr, "expired") {
+				return true, "SSL 인증서 만료"
+			} else if strings.Contains(errStr, "not valid") || strings.Contains(errStr, "invalid") {
+				return true, "SSL 인증서 유효하지 않음"
+			} else if strings.Contains(errStr, "self signed") || strings.Contains(errStr, "self-signed") {
+				return true, "자체 서명 인증서"
+			} else if strings.Contains(errStr, "hostname") || strings.Contains(errStr, "doesn't match") {
+				return true, "SSL 인증서 도메인 불일치"
+			} else if strings.Contains(errStr, "unknown authority") {
+				return true, "신뢰할 수 없는 인증 기관"
+			} else {
+				return true, "SSL 인증서 오류: " + errStr
+			}
+		}
+		return false, ""
+	}
+	defer resp.Body.Close()
+
+	return false, ""
 }
 
 func (c *Checker) parseHealthJSON(body []byte) types.HealthStatus {

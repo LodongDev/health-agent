@@ -19,7 +19,7 @@ import (
 	"health-agent/internal/wsclient"
 )
 
-const version = "1.16.0"
+const version = "1.17.0"
 
 const serviceFile = `[Unit]
 Description=Health Agent - Service Health Check Agent

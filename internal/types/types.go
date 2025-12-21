@@ -6,11 +6,33 @@ import "time"
 type Status string
 
 const (
-	StatusUp      Status = "UP"
-	StatusDown    Status = "DOWN"
-	StatusWarn    Status = "WARN"
-	StatusUnknown Status = "UNKNOWN"
+	StatusUp       Status = "UP"
+	StatusDown     Status = "DOWN"
+	StatusWarn     Status = "WARN"
+	StatusUnknown  Status = "UNKNOWN"
+	StatusDegraded Status = "WARN" // Degraded는 WARN으로 매핑
 )
+
+// HealthStatus 헬스체크 상태 (체커에서 사용)
+type HealthStatus = Status
+
+// HealthResult 헬스체크 결과
+type HealthResult struct {
+	Status       HealthStatus `json:"status"`
+	Message      string       `json:"message"`
+	ResponseTime int64        `json:"responseTime"` // ms
+	CheckedAt    time.Time    `json:"checkedAt"`
+	SSLError     bool         `json:"sslError,omitempty"`     // SSL 인증서 오류 여부
+	SSLMessage   string       `json:"sslMessage,omitempty"`   // SSL 오류 메시지
+}
+
+// ContainerType 컨테이너 타입 정보
+type ContainerType struct {
+	Type       string `json:"type"`
+	Subtype    string `json:"subtype,omitempty"`
+	Confidence int    `json:"confidence"`
+	Source     string `json:"source"`
+}
 
 // 서비스 타입
 type ServiceType string
@@ -59,6 +81,10 @@ type ServiceState struct {
 	Endpoint   string `json:"endpoint,omitempty"`
 	Path       string `json:"path,omitempty"`       // 설정 파일 또는 실행 파일 경로
 	ConfigPath string `json:"configPath,omitempty"` // 설정 파일 경로
+
+	// SSL 인증서 정보
+	SSLError   bool   `json:"sslError,omitempty"`   // SSL 인증서 오류 여부
+	SSLMessage string `json:"sslMessage,omitempty"` // SSL 오류 메시지
 }
 
 // AgentReport 에이전트 보고서
