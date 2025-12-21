@@ -136,7 +136,7 @@ func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container
 	start := time.Now()
 
 	state := types.ServiceState{
-		ID:        fmt.Sprintf("docker-%s", cont.ID[:12]),
+		ID:        fmt.Sprintf("docker-%s", name), // 컨테이너 이름 사용 (재시작해도 동일)
 		Name:      name,
 		Type:      svcType,
 		CheckedAt: time.Now(),
