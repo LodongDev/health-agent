@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -95,12 +96,26 @@ func ConfigExists() bool {
 }
 
 // LoadOrCreateAgentID 에이전트 ID 로드 또는 생성
+// Linux: /etc/machine-id 사용 (시스템 고유 ID, 재설치해도 동일)
+// Windows: 기존 방식 (UUID 생성 후 저장)
 func LoadOrCreateAgentID() string {
-	idFile := filepath.Join(getConfigDir(), "agent-id")
-	if data, err := os.ReadFile(idFile); err == nil {
-		return string(data)
+	// 1. Linux: /etc/machine-id 사용 (가장 안정적)
+	if runtime.GOOS == "linux" {
+		if data, err := os.ReadFile("/etc/machine-id"); err == nil {
+			machineID := strings.TrimSpace(string(data))
+			if len(machineID) >= 8 {
+				return fmt.Sprintf("agent-%s", machineID[:8])
+			}
+		}
 	}
 
+	// 2. 기존 저장된 ID 확인
+	idFile := filepath.Join(getConfigDir(), "agent-id")
+	if data, err := os.ReadFile(idFile); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+
+	// 3. 새 ID 생성 (Windows 또는 machine-id 없는 경우)
 	id := fmt.Sprintf("agent-%s", uuid.New().String()[:8])
 
 	os.MkdirAll(getConfigDir(), 0755)
