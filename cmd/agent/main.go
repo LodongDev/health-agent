@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"health-agent/internal/browser"
 	"health-agent/internal/config"
 	"health-agent/internal/docker"
 	"health-agent/internal/oscheck"
@@ -19,7 +20,7 @@ import (
 	"health-agent/internal/wsclient"
 )
 
-const version = "1.18.0"
+const version = "1.19.0"
 
 const serviceFile = `[Unit]
 Description=Health Agent - Service Health Check Agent
@@ -58,6 +59,8 @@ func main() {
 		cmdIgnore()
 	case "logs":
 		cmdLogs()
+	case "deps":
+		cmdDeps()
 	case "version", "-v", "--version":
 		fmt.Printf("Health Agent v%s\n", version)
 	case "help", "-h", "--help":
@@ -106,6 +109,9 @@ func printUsage() {
 	fmt.Println("              dev-*          Prefix match (접두사)")
 	fmt.Println("              *-dev          Suffix match (접미사)")
 	fmt.Println("              *test*         Contains match (포함)")
+	fmt.Println()
+	fmt.Println("  deps      Check and install dependencies")
+	fmt.Println("            --install        Auto-install Chrome (Linux only)")
 	fmt.Println()
 	fmt.Println("  version   Version info")
 	fmt.Println("  help      Help")
@@ -171,6 +177,138 @@ func cmdLogs() {
 	}()
 
 	cmd.Run()
+}
+
+func cmdDeps() {
+	install := false
+	for _, arg := range os.Args[2:] {
+		if arg == "--install" {
+			install = true
+		}
+	}
+
+	fmt.Println("Dependency Check")
+	fmt.Println("================")
+	fmt.Println()
+
+	// Docker check
+	dockerOK := false
+	dockerChk := docker.New()
+	if err := dockerChk.Ping(context.Background()); err == nil {
+		fmt.Println("[OK] Docker: Connected")
+		dockerOK = true
+	} else {
+		fmt.Printf("[WARN] Docker: Not available (%v)\n", err)
+	}
+
+	// Chrome check
+	chromeOK := false
+	browserChk := browser.New()
+	if browserChk.IsAvailable() {
+		fmt.Printf("[OK] Chrome: %s\n", browserChk.GetChromePath())
+		chromeOK = true
+	} else {
+		fmt.Println("[WARN] Chrome: Not installed")
+		fmt.Println()
+		fmt.Println("Chrome is required for full web resource monitoring.")
+		fmt.Println("Without Chrome, only static HTML parsing is available.")
+		fmt.Println()
+
+		if install && runtime.GOOS == "linux" {
+			fmt.Println("Installing Chrome...")
+			if err := installChrome(); err != nil {
+				fmt.Printf("[ERROR] Failed to install Chrome: %v\n", err)
+			} else {
+				fmt.Println("[OK] Chrome installed successfully")
+				chromeOK = true
+			}
+		} else {
+			fmt.Println("Install Chrome with:")
+			fmt.Println(browserChk.GetInstallCommand())
+			fmt.Println()
+			if runtime.GOOS == "linux" {
+				fmt.Println("Or run: health-agent deps --install")
+			}
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("Summary")
+	fmt.Println("-------")
+	if dockerOK && chromeOK {
+		fmt.Println("[OK] All dependencies satisfied")
+	} else {
+		if !dockerOK {
+			fmt.Println("[WARN] Docker not available - container monitoring disabled")
+		}
+		if !chromeOK {
+			fmt.Println("[WARN] Chrome not available - using HTML parsing fallback for web checks")
+		}
+	}
+}
+
+func installChrome() error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("auto-install only available on Linux")
+	}
+
+	// Detect package manager
+	if _, err := exec.LookPath("apt-get"); err == nil {
+		// Debian/Ubuntu
+		fmt.Println("Detected: Debian/Ubuntu")
+		cmds := [][]string{
+			{"apt-get", "update"},
+			{"apt-get", "install", "-y", "chromium-browser"},
+		}
+		for _, args := range cmds {
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				// Try chromium instead
+				if args[len(args)-1] == "chromium-browser" {
+					cmd2 := exec.Command("apt-get", "install", "-y", "chromium")
+					cmd2.Stdout = os.Stdout
+					cmd2.Stderr = os.Stderr
+					if err2 := cmd2.Run(); err2 != nil {
+						return err
+					}
+				} else {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+
+	if _, err := exec.LookPath("yum"); err == nil {
+		// CentOS/RHEL
+		fmt.Println("Detected: CentOS/RHEL")
+		cmd := exec.Command("yum", "install", "-y", "chromium")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+
+	if _, err := exec.LookPath("dnf"); err == nil {
+		// Fedora
+		fmt.Println("Detected: Fedora")
+		cmd := exec.Command("dnf", "install", "-y", "chromium")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+
+	if _, err := exec.LookPath("apk"); err == nil {
+		// Alpine
+		fmt.Println("Detected: Alpine")
+		cmd := exec.Command("apk", "add", "chromium")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+
+	return fmt.Errorf("unsupported Linux distribution, please install Chrome manually")
 }
 
 func cmdIgnore() {
@@ -447,6 +585,20 @@ func reloadRunningService() error {
 
 func installAndStartService() error {
 	fmt.Println("[INFO] Installing systemd service...")
+
+	// Chrome 설치 (웹 리소스 모니터링용)
+	browserChk := browser.New()
+	if !browserChk.IsAvailable() {
+		fmt.Println("[INFO] Installing Chrome for web resource monitoring...")
+		if err := installChrome(); err != nil {
+			fmt.Printf("[WARN] Chrome install failed: %v\n", err)
+			fmt.Println("[INFO] Web resource checking will use HTML parsing fallback")
+		} else {
+			fmt.Println("[OK] Chrome installed")
+		}
+	} else {
+		fmt.Printf("[OK] Chrome already installed: %s\n", browserChk.GetChromePath())
+	}
 
 	execPath, err := os.Executable()
 	if err != nil {

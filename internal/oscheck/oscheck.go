@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +26,7 @@ func New() *Checker {
 
 func (c *Checker) CheckAll() []types.ServiceState {
 	var results []types.ServiceState
+	// Database
 	if r := c.CheckMySQL(); r != nil {
 		results = append(results, *r)
 	}
@@ -35,6 +37,13 @@ func (c *Checker) CheckAll() []types.ServiceState {
 		results = append(results, *r)
 	}
 	if r := c.CheckMongoDB(); r != nil {
+		results = append(results, *r)
+	}
+	// Web Server
+	if r := c.CheckNginx(); r != nil {
+		results = append(results, *r)
+	}
+	if r := c.CheckHTTPD(); r != nil {
 		results = append(results, *r)
 	}
 	return results
@@ -343,4 +352,178 @@ func (c *Checker) findExecutable(names ...string) string {
 		}
 	}
 	return ""
+}
+
+// CheckNginx Nginx 웹 서버 체크
+func (c *Checker) CheckNginx() *types.ServiceState {
+	port, configPath := c.getNginxPortAndPath()
+	if port == 0 {
+		return nil
+	}
+	state := &types.ServiceState{
+		ID: "os-nginx", Name: "Nginx (OS)", Type: types.TypeWebNginx,
+		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ConfigPath: configPath,
+		Path:       c.findExecutable("nginx"),
+	}
+	start := time.Now()
+
+	// HTTP 요청으로 상태 확인
+	status, msg, elapsed := c.httpCheck(fmt.Sprintf("http://localhost:%d/", port))
+	state.Status = status
+	state.Message = msg
+	state.ResponseTime = elapsed
+	if elapsed == 0 {
+		state.ResponseTime = int(time.Since(start).Milliseconds())
+	}
+	return state
+}
+
+func (c *Checker) getNginxPortAndPath() (int, string) {
+	paths := []string{"/etc/nginx/nginx.conf", "/usr/local/nginx/conf/nginx.conf"}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			// nginx.conf에서 listen 포트 파싱
+			if port := c.parseNginxListenPort(p); port > 0 {
+				return port, p
+			}
+			// 기본 포트 확인
+			if c.isPortListening(80) {
+				return 80, p
+			}
+			if c.isPortListening(443) {
+				return 443, p
+			}
+		}
+	}
+	// 설정 파일 없이 포트만 확인
+	if c.isPortListening(80) && c.findExecutable("nginx") != "" {
+		return 80, ""
+	}
+	return 0, ""
+}
+
+func (c *Checker) parseNginxListenPort(path string) int {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+	re := regexp.MustCompile(`listen\s+(\d+)`)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if matches := re.FindStringSubmatch(line); len(matches) > 1 {
+			port, _ := strconv.Atoi(matches[1])
+			if port > 0 {
+				return port
+			}
+		}
+	}
+	return 0
+}
+
+// CheckHTTPD Apache HTTPD 웹 서버 체크
+func (c *Checker) CheckHTTPD() *types.ServiceState {
+	port, configPath := c.getHTTPDPortAndPath()
+	if port == 0 {
+		return nil
+	}
+	state := &types.ServiceState{
+		ID: "os-httpd", Name: "Apache HTTPD (OS)", Type: types.TypeWebApache,
+		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ConfigPath: configPath,
+		Path:       c.findExecutable("httpd", "apache2"),
+	}
+	start := time.Now()
+
+	// HTTP 요청으로 상태 확인
+	status, msg, elapsed := c.httpCheck(fmt.Sprintf("http://localhost:%d/", port))
+	state.Status = status
+	state.Message = msg
+	state.ResponseTime = elapsed
+	if elapsed == 0 {
+		state.ResponseTime = int(time.Since(start).Milliseconds())
+	}
+	return state
+}
+
+func (c *Checker) getHTTPDPortAndPath() (int, string) {
+	paths := []string{
+		"/etc/httpd/conf/httpd.conf",           // CentOS/RHEL
+		"/etc/apache2/apache2.conf",            // Debian/Ubuntu
+		"/etc/apache2/ports.conf",              // Debian/Ubuntu ports
+		"/usr/local/apache2/conf/httpd.conf",   // Manual install
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			if port := c.parseHTTPDListenPort(p); port > 0 {
+				return port, p
+			}
+			if c.isPortListening(80) {
+				return 80, p
+			}
+		}
+	}
+	// 설정 파일 없이 포트만 확인
+	if c.isPortListening(80) && c.findExecutable("httpd", "apache2") != "" {
+		return 80, ""
+	}
+	return 0, ""
+}
+
+func (c *Checker) parseHTTPDListenPort(path string) int {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+	re := regexp.MustCompile(`(?i)^Listen\s+(\d+)`)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if matches := re.FindStringSubmatch(line); len(matches) > 1 {
+			port, _ := strconv.Atoi(matches[1])
+			if port > 0 {
+				return port
+			}
+		}
+	}
+	return 0
+}
+
+// httpCheck HTTP 요청으로 상태 확인
+func (c *Checker) httpCheck(url string) (types.Status, string, int) {
+	start := time.Now()
+	client := &net.Dialer{Timeout: c.timeout}
+	conn, err := client.Dial("tcp", strings.TrimPrefix(strings.TrimPrefix(url, "http://"), "https://"))
+	if err != nil {
+		return types.StatusDown, fmt.Sprintf("연결 실패: %v", err), int(time.Since(start).Milliseconds())
+	}
+	conn.Close()
+
+	// HTTP GET 요청
+	resp, err := (&http.Client{Timeout: c.timeout}).Get(url)
+	elapsed := int(time.Since(start).Milliseconds())
+	if err != nil {
+		return types.StatusDown, fmt.Sprintf("HTTP 요청 실패: %v", err), elapsed
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return types.StatusUp, fmt.Sprintf("%d OK", resp.StatusCode), elapsed
+	}
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		return types.StatusWarn, fmt.Sprintf("%d %s", resp.StatusCode, resp.Status), elapsed
+	}
+	if resp.StatusCode >= 500 {
+		return types.StatusDown, fmt.Sprintf("%d %s", resp.StatusCode, resp.Status), elapsed
+	}
+	return types.StatusUp, fmt.Sprintf("%d %s", resp.StatusCode, resp.Status), elapsed
 }

@@ -4,14 +4,18 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
+	"health-agent/internal/browser"
 	"health-agent/internal/config"
 	"health-agent/internal/types"
 
@@ -35,8 +39,11 @@ func getMachineID() string {
 }
 
 type Checker struct {
-	client  *client.Client
-	timeout time.Duration
+	client           *client.Client
+	timeout          time.Duration
+	lastResults      []types.ServiceState // 마지막 성공 결과 캐시
+	lastRunningNames map[string]bool      // 이전에 실행 중이었던 컨테이너 이름
+	browserChecker   *browser.Checker     // 브라우저 기반 네트워크 체커
 }
 
 func New() *Checker {
@@ -58,10 +65,19 @@ func New() *Checker {
 		)
 	}
 
-	if err != nil {
-		return &Checker{timeout: 5 * time.Second}
+	// 브라우저 체커 초기화
+	browserChk := browser.New()
+	if browserChk.IsAvailable() {
+		log.Printf("[INFO] Browser-based network checking enabled (Chrome: %s)", browserChk.GetChromePath())
+	} else {
+		log.Printf("[WARN] Chrome not found. Using HTML parsing fallback for web resource checking.")
+		log.Printf("[INFO] To enable full network capture, install Chrome:\n%s", browserChk.GetInstallCommand())
 	}
-	return &Checker{client: cli, timeout: 5 * time.Second}
+
+	if err != nil {
+		return &Checker{timeout: 5 * time.Second, browserChecker: browserChk}
+	}
+	return &Checker{client: cli, timeout: 5 * time.Second, browserChecker: browserChk}
 }
 
 func (c *Checker) Ping(ctx context.Context) error {
@@ -77,8 +93,26 @@ func (c *Checker) CheckAll(ctx context.Context) ([]types.ServiceState, error) {
 		return nil, fmt.Errorf("Docker 클라이언트 없음")
 	}
 
-	containers, err := c.client.ContainerList(ctx, dockertypes.ContainerListOptions{All: false})
+	// 최대 3번 재시도 - 모든 컨테이너 조회 (종료된 것 포함)
+	var allContainers []dockertypes.Container
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		allContainers, err = c.client.ContainerList(ctx, dockertypes.ContainerListOptions{All: true})
+		if err == nil {
+			break
+		}
+		log.Printf("[WARN] Docker API 호출 실패 (시도 %d/3): %v", attempt, err)
+		if attempt < 3 {
+			time.Sleep(time.Duration(attempt) * time.Second) // 1초, 2초 대기
+		}
+	}
+
 	if err != nil {
+		// 3번 모두 실패 시 캐시된 결과 반환
+		if len(c.lastResults) > 0 {
+			log.Printf("[WARN] Docker API 실패, 캐시된 결과 사용 (%d개 서비스)", len(c.lastResults))
+			return c.lastResults, nil
+		}
 		return nil, err
 	}
 
@@ -86,7 +120,9 @@ func (c *Checker) CheckAll(ctx context.Context) ([]types.ServiceState, error) {
 	ignoreList := config.GetIgnoreList()
 
 	var results []types.ServiceState
-	for _, cont := range containers {
+	currentRunningNames := make(map[string]bool)
+
+	for _, cont := range allContainers {
 		name := strings.TrimPrefix(cont.Names[0], "/")
 
 		// 무시 목록에 있으면 건너뛰기
@@ -95,10 +131,42 @@ func (c *Checker) CheckAll(ctx context.Context) ([]types.ServiceState, error) {
 			continue
 		}
 
-		state := c.checkContainer(ctx, cont)
-		results = append(results, state)
+		if cont.State == "running" {
+			// 실행 중인 컨테이너 → 정상 체크
+			state := c.checkContainer(ctx, cont)
+			results = append(results, state)
+			currentRunningNames[name] = true
+		} else if cont.State == "exited" {
+			// 종료된 컨테이너 → 이전에 실행 중이었으면 CLOSED
+			if c.lastRunningNames != nil && c.lastRunningNames[name] {
+				log.Printf("[INFO] Container stopped by user: %s (state: %s)", name, cont.State)
+				state := c.createClosedState(name, cont)
+				results = append(results, state)
+			}
+		}
 	}
+
+	// 현재 실행 중인 컨테이너 목록 업데이트
+	c.lastRunningNames = currentRunningNames
+
+	// 성공 시 결과 캐시
+	c.lastResults = results
+
 	return results, nil
+}
+
+// createClosedState 수동 종료된 컨테이너의 CLOSED 상태 생성
+func (c *Checker) createClosedState(name string, cont dockertypes.Container) types.ServiceState {
+	return types.ServiceState{
+		ID:           name, // 컨테이너 이름 = 서비스 ID (serverIp + name으로 고유성 보장)
+		Name:         name,
+		Type:         types.TypeDocker,
+		Status:       types.StatusClosed,
+		Message:      "컨테이너 수동 종료 (docker stop)",
+		ResponseTime: 0,
+		CheckedAt:    time.Now(),
+		Path:         cont.Image,
+	}
 }
 
 // isInIgnoreList 컨테이너 이름이 무시 목록에 있는지 확인
@@ -152,10 +220,9 @@ func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container
 	svcType := c.detectServiceType(cont)
 	start := time.Now()
 
-	// 서비스 ID = {machineId}-{containerName} (서버 고유, 재설치/재시작 무관)
-	machineID := getMachineID()
+	// 서비스 ID = 컨테이너 이름 (serverIp + name으로 고유성 보장)
 	state := types.ServiceState{
-		ID:        fmt.Sprintf("%s-%s", machineID, name),
+		ID:        name,
 		Name:      name,
 		Type:      svcType,
 		CheckedAt: time.Now(),
@@ -680,8 +747,8 @@ func (c *Checker) checkWebApp(ctx context.Context, cont dockertypes.Container, s
 		protocol = "https"
 	}
 
-	url := fmt.Sprintf("%s://%s:%d/", protocol, ip, port)
-	status, msg, elapsed, sslError, sslMessage := c.httpCheckWithSSL(url)
+	pageURL := fmt.Sprintf("%s://%s:%d/", protocol, ip, port)
+	status, msg, elapsed, sslError, sslMessage := c.httpCheckWithSSL(pageURL)
 
 	if status != types.StatusDown {
 		state.Status = status
@@ -690,6 +757,17 @@ func (c *Checker) checkWebApp(ctx context.Context, cont dockertypes.Container, s
 		state.ResponseTime = elapsed
 		state.SSLError = sslError
 		state.SSLMessage = sslMessage
+
+		// 페이지가 정상이면 리소스 체크 (JS, CSS, 이미지 등)
+		if status == types.StatusUp {
+			resourceErrors := c.checkWebResources(pageURL)
+			if len(resourceErrors) > 0 {
+				state.Status = types.StatusWarn
+				state.ResourceErrors = resourceErrors
+				state.Message = fmt.Sprintf("리소스 에러 %d개 발견", len(resourceErrors))
+				log.Printf("[WARN] %s: %d resource errors found", state.Name, len(resourceErrors))
+			}
+		}
 		return state
 	}
 
@@ -1163,4 +1241,198 @@ func (c *Checker) getHTTPPort(cont dockertypes.Container) int {
 		return int(cont.Ports[0].PrivatePort)
 	}
 	return 8080
+}
+
+// checkWebResources 웹 페이지 진입 시 모든 네트워크 리소스 상태 체크
+// Chrome이 있으면 실제 브라우저로 모든 네트워크 요청 캡처
+// Chrome이 없으면 HTML 파싱으로 fallback
+func (c *Checker) checkWebResources(pageURL string) []types.ResourceError {
+	// Chrome이 설치되어 있으면 브라우저 기반 체크
+	if c.browserChecker != nil && c.browserChecker.IsAvailable() {
+		errors, err := c.browserChecker.CheckPageResources(pageURL)
+		if err != nil {
+			log.Printf("[WARN] Browser check failed, falling back to HTML parsing: %v", err)
+			return c.checkWebResourcesFallback(pageURL)
+		}
+		return errors
+	}
+
+	// Chrome이 없으면 HTML 파싱 fallback
+	return c.checkWebResourcesFallback(pageURL)
+}
+
+// checkWebResourcesFallback HTML 파싱 기반 리소스 체크 (Chrome 없을 때 사용)
+func (c *Checker) checkWebResourcesFallback(pageURL string) []types.ResourceError {
+	var errors []types.ResourceError
+
+	client := &http.Client{
+		Timeout: c.timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	// 페이지 HTML 가져오기
+	resp, err := client.Get(pageURL)
+	if err != nil {
+		return errors
+	}
+	defer resp.Body.Close()
+
+	// HTML 읽기 (최대 2MB)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return errors
+	}
+	html := string(body)
+
+	// 모든 네트워크 리소스 URL 추출 패턴
+	patterns := map[string]*regexp.Regexp{
+		// JavaScript
+		"js": regexp.MustCompile(`<script[^>]+src=["']([^"']+)["']`),
+		// CSS (stylesheet)
+		"css": regexp.MustCompile(`<link[^>]+href=["']([^"']+)["'][^>]*rel=["']stylesheet["']|<link[^>]+rel=["']stylesheet["'][^>]*href=["']([^"']+)["']`),
+		// 이미지
+		"img": regexp.MustCompile(`<img[^>]+src=["']([^"']+)["']`),
+		// srcset 이미지
+		"img-srcset": regexp.MustCompile(`srcset=["']([^"']+)["']`),
+		// 폰트/아이콘 (preload, prefetch)
+		"font": regexp.MustCompile(`<link[^>]+href=["']([^"']+\.(woff2?|ttf|eot|otf)[^"']*)["']`),
+		// Favicon, 아이콘
+		"icon": regexp.MustCompile(`<link[^>]+href=["']([^"']+)["'][^>]*rel=["'](icon|shortcut icon|apple-touch-icon)["']|<link[^>]+rel=["'](icon|shortcut icon|apple-touch-icon)["'][^>]*href=["']([^"']+)["']`),
+		// 비디오
+		"video": regexp.MustCompile(`<video[^>]+src=["']([^"']+)["']|<source[^>]+src=["']([^"']+)["']`),
+		// 오디오
+		"audio": regexp.MustCompile(`<audio[^>]+src=["']([^"']+)["']`),
+		// iframe
+		"iframe": regexp.MustCompile(`<iframe[^>]+src=["']([^"']+)["']`),
+		// object/embed
+		"embed": regexp.MustCompile(`<(?:object|embed)[^>]+(?:src|data)=["']([^"']+)["']`),
+		// background-image in style
+		"bg-img": regexp.MustCompile(`url\(["']?([^"')]+)["']?\)`),
+		// preload/prefetch resources
+		"preload": regexp.MustCompile(`<link[^>]+href=["']([^"']+)["'][^>]*rel=["'](?:preload|prefetch)["']|<link[^>]+rel=["'](?:preload|prefetch)["'][^>]*href=["']([^"']+)["']`),
+		// manifest
+		"manifest": regexp.MustCompile(`<link[^>]+href=["']([^"']+)["'][^>]*rel=["']manifest["']`),
+	}
+
+	baseURL, _ := url.Parse(pageURL)
+	checked := make(map[string]bool) // 중복 체크 방지
+
+	for resType, pattern := range patterns {
+		matches := pattern.FindAllStringSubmatch(html, -1)
+		for _, match := range matches {
+			// 매칭된 그룹들 중 비어있지 않은 URL 찾기
+			for i := 1; i < len(match); i++ {
+				resourceURL := strings.TrimSpace(match[i])
+				if resourceURL == "" {
+					continue
+				}
+
+				// srcset인 경우 여러 URL 파싱
+				if resType == "img-srcset" {
+					srcsetURLs := c.parseSrcset(resourceURL)
+					for _, srcURL := range srcsetURLs {
+						c.checkAndAddError(srcURL, "img", baseURL, checked, &errors)
+					}
+					continue
+				}
+
+				c.checkAndAddError(resourceURL, resType, baseURL, checked, &errors)
+			}
+		}
+	}
+
+	return errors
+}
+
+// parseSrcset srcset 속성에서 URL들을 추출
+func (c *Checker) parseSrcset(srcset string) []string {
+	var urls []string
+	// srcset 형식: "url1 1x, url2 2x" 또는 "url1 100w, url2 200w"
+	parts := strings.Split(srcset, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		// 공백으로 분리하여 첫 번째가 URL
+		fields := strings.Fields(part)
+		if len(fields) > 0 {
+			urls = append(urls, fields[0])
+		}
+	}
+	return urls
+}
+
+// checkAndAddError 리소스 URL 체크 후 에러 추가
+func (c *Checker) checkAndAddError(resourceURL, resType string, baseURL *url.URL, checked map[string]bool, errors *[]types.ResourceError) {
+	// 스킵할 URL 패턴
+	if strings.HasPrefix(resourceURL, "data:") ||
+		strings.HasPrefix(resourceURL, "blob:") ||
+		strings.HasPrefix(resourceURL, "javascript:") ||
+		strings.HasPrefix(resourceURL, "mailto:") ||
+		strings.HasPrefix(resourceURL, "#") {
+		return
+	}
+
+	// 상대 경로를 절대 경로로 변환
+	resourceURL = c.resolveURL(baseURL, resourceURL)
+
+	// 중복 체크
+	if checked[resourceURL] {
+		return
+	}
+	checked[resourceURL] = true
+
+	// 리소스 상태 체크 (HEAD 요청)
+	statusCode := c.checkResourceStatus(resourceURL)
+	if statusCode >= 400 {
+		*errors = append(*errors, types.ResourceError{
+			URL:        resourceURL,
+			StatusCode: statusCode,
+			Type:       resType,
+		})
+		log.Printf("[WARN] Resource error: %s %d (%s)", resType, statusCode, resourceURL)
+	}
+}
+
+// resolveURL 상대 경로를 절대 경로로 변환
+func (c *Checker) resolveURL(base *url.URL, ref string) string {
+	// 이미 절대 URL인 경우
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return ref
+	}
+	// //로 시작하는 경우 (프로토콜 상대 URL)
+	if strings.HasPrefix(ref, "//") {
+		return base.Scheme + ":" + ref
+	}
+	// 상대 경로
+	refURL, err := url.Parse(ref)
+	if err != nil {
+		return ref
+	}
+	return base.ResolveReference(refURL).String()
+}
+
+// checkResourceStatus 리소스 URL의 HTTP 상태 코드 확인
+func (c *Checker) checkResourceStatus(resourceURL string) int {
+	client := &http.Client{
+		Timeout: 3 * time.Second, // 리소스는 빠르게 체크
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	req, err := http.NewRequest("HEAD", resourceURL, nil)
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("User-Agent", "HealthAgent/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		// 연결 실패는 500으로 처리
+		return 500
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode
 }

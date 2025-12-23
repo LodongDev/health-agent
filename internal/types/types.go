@@ -9,6 +9,7 @@ const (
 	StatusUp       Status = "UP"
 	StatusDown     Status = "DOWN"
 	StatusWarn     Status = "WARN"
+	StatusClosed   Status = "CLOSED"  // 사용자가 수동 종료 (docker stop)
 	StatusUnknown  Status = "UNKNOWN"
 	StatusDegraded Status = "WARN" // Degraded는 WARN으로 매핑
 )
@@ -85,6 +86,16 @@ type ServiceState struct {
 	// SSL 인증서 정보
 	SSLError   bool   `json:"sslError,omitempty"`   // SSL 인증서 오류 여부
 	SSLMessage string `json:"sslMessage,omitempty"` // SSL 오류 메시지
+
+	// 웹 리소스 에러 정보
+	ResourceErrors []ResourceError `json:"resourceErrors,omitempty"` // 리소스 로딩 에러 목록
+}
+
+// ResourceError 웹 리소스 로딩 에러
+type ResourceError struct {
+	URL        string `json:"url"`        // 리소스 URL
+	StatusCode int    `json:"statusCode"` // HTTP 상태 코드
+	Type       string `json:"type"`       // js, css, img 등
 }
 
 // AgentReport 에이전트 보고서

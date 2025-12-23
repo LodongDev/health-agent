@@ -3,6 +3,8 @@ module health-agent
 go 1.21
 
 require (
+	github.com/chromedp/cdproto v0.0.0-20231011050154-1d073bb38998
+	github.com/chromedp/chromedp v0.9.3
 	github.com/docker/docker v24.0.7+incompatible
 	github.com/docker/go-connections v0.4.0
 	github.com/google/uuid v1.5.0
