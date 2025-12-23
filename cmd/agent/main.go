@@ -19,7 +19,7 @@ import (
 	"health-agent/internal/wsclient"
 )
 
-const version = "1.17.0"
+const version = "1.18.0"
 
 const serviceFile = `[Unit]
 Description=Health Agent - Service Health Check Agent
@@ -29,6 +29,7 @@ Wants=docker.service
 [Service]
 Type=simple
 ExecStart=/usr/bin/health-agent docker --foreground
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -289,13 +290,27 @@ func cmdConfig() {
 				os.Exit(1)
 			}
 
-			cfg := &config.AgentConfig{APIKey: apiKey}
+			cfg, _ := config.LoadConfig()
+			if cfg == nil {
+				cfg = &config.AgentConfig{}
+			}
+			cfg.APIKey = apiKey
 			if err := config.SaveConfig(cfg); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to save config: %v\n", err)
 				os.Exit(1)
 			}
 			fmt.Printf("[INFO] API key configured\n")
 			fmt.Printf("       Key: %s****\n", apiKey[:12])
+
+			// Reload running service
+			if runtime.GOOS == "linux" && isServiceRunning() {
+				if err := reloadRunningService(); err != nil {
+					fmt.Printf("[WARN] Failed to reload service: %v\n", err)
+					fmt.Println("[INFO] Restart service manually: systemctl restart health-agent")
+				} else {
+					fmt.Println("[INFO] Running service reloaded with new API key")
+				}
+			}
 			return
 
 		case "--show":
@@ -422,6 +437,12 @@ func isServiceRunning() bool {
 	}
 	cmd := exec.Command("systemctl", "is-active", "--quiet", "health-agent")
 	return cmd.Run() == nil
+}
+
+func reloadRunningService() error {
+	// systemctl reload sends SIGHUP to the service
+	cmd := exec.Command("systemctl", "reload", "health-agent")
+	return cmd.Run()
 }
 
 func installAndStartService() error {
@@ -551,6 +572,10 @@ func (a *Agent) Run(once bool) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// SIGHUP for config reload (Linux only)
+	reloadCh := make(chan os.Signal, 1)
+	setupReloadSignal(reloadCh)
+
 	a.printBanner()
 
 	var err error
@@ -583,6 +608,8 @@ func (a *Agent) Run(once bool) {
 		select {
 		case <-checkTicker.C:
 			a.check(ctx)
+		case <-reloadCh:
+			a.reloadConfig()
 		case <-sigCh:
 			log.Println("\n[INFO] Shutting down...")
 			return
@@ -657,6 +684,24 @@ func (a *Agent) printBanner() {
 	fmt.Printf(" IP       : %s\n", a.ip)
 	fmt.Printf(" Server   : %s\n", config.MonitoringAPIURL)
 	fmt.Println("==========================================")
+}
+
+func (a *Agent) reloadConfig() {
+	log.Println("[INFO] Config reload requested (SIGHUP)")
+
+	newAPIKey, err := config.GetAPIKey()
+	if err != nil {
+		log.Printf("[ERROR] Failed to reload config: %v", err)
+		return
+	}
+
+	if newAPIKey != a.apiKey {
+		log.Printf("[INFO] API key changed, reconnecting...")
+		a.apiKey = newAPIKey
+		a.wsClient.UpdateAPIKey(newAPIKey)
+	} else {
+		log.Println("[INFO] Config reloaded (no changes)")
+	}
 }
 
 func (a *Agent) printSummary() {

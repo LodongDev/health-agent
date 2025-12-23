@@ -169,3 +169,17 @@ func (c *Client) Close() error {
 	}
 	return nil
 }
+
+// UpdateAPIKey API 키 변경 후 재연결
+func (c *Client) UpdateAPIKey(newAPIKey string) {
+	c.mu.Lock()
+	c.apiKey = newAPIKey
+	c.connected = false
+	if c.conn != nil {
+		c.conn.Close()
+	}
+	c.mu.Unlock()
+
+	log.Printf("[INFO] API 키가 변경되어 재연결합니다...")
+	c.reconnect()
+}
