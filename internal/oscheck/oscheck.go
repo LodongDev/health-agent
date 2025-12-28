@@ -427,7 +427,10 @@ func (c *Checker) CheckNginx() *types.ServiceState {
 	}
 
 	// HTTP 요청으로 응답 확인
-	status, msg, elapsed := c.httpCheck(fmt.Sprintf("http://localhost:%d/", port))
+	checkURL := fmt.Sprintf("http://localhost:%d/", port)
+	status, msg, elapsed := c.httpCheck(checkURL)
+	log.Printf("[DEBUG] Nginx HTTP check: %s -> status=%s, msg=%s, elapsed=%dms", checkURL, status, msg, elapsed)
+
 	state.Status = status
 	state.Message = msg
 	state.ResponseTime = elapsed
@@ -527,7 +530,10 @@ func (c *Checker) CheckHTTPD() *types.ServiceState {
 	}
 
 	// HTTP 요청으로 응답 확인
-	status, msg, elapsed := c.httpCheck(fmt.Sprintf("http://localhost:%d/", port))
+	checkURL := fmt.Sprintf("http://localhost:%d/", port)
+	status, msg, elapsed := c.httpCheck(checkURL)
+	log.Printf("[DEBUG] HTTPD HTTP check: %s -> status=%s, msg=%s, elapsed=%dms", checkURL, status, msg, elapsed)
+
 	state.Status = status
 	state.Message = msg
 	state.ResponseTime = elapsed
