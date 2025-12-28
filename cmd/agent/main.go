@@ -775,6 +775,11 @@ func (a *Agent) Run(once bool) {
 		log.Printf("[WARN] Docker connection failed: %v (skipping Docker checks)", err)
 	} else {
 		log.Println("[INFO] Docker connected")
+
+		// Docker 이벤트 리스너 시작 (컨테이너 stop/die 즉시 감지)
+		if err := a.dockerCheck.StartEventsListener(ctx, a.handleContainerEvent); err != nil {
+			log.Printf("[WARN] Docker events listener failed: %v", err)
+		}
 	}
 
 	if once {
@@ -856,6 +861,33 @@ func (a *Agent) handleStateChange(current types.ServiceState) {
 			log.Printf("[INFO] %s: HTTP check %v -> %v",
 				current.Name, prev.HttpCheck.Success, current.HttpCheck.Success)
 		}
+	}
+}
+
+// handleContainerEvent Docker 이벤트 처리 (컨테이너 stop/die 시 즉시 보고)
+func (a *Agent) handleContainerEvent(event docker.ContainerEvent) {
+	log.Printf("[INFO] Container event: %s %s", event.Action, event.Name)
+
+	// 컨테이너 상태 조회
+	ctx := context.Background()
+	state := a.dockerCheck.GetContainerState(ctx, event.Name)
+	if state == nil {
+		// 컨테이너 정보를 가져올 수 없으면 기본 상태로 생성
+		state = &types.ServiceState{
+			ID:             event.Name,
+			Name:           event.Name,
+			Type:           types.TypeDocker,
+			CheckedAt:      event.Time,
+			ContainerState: "exited", // stop/die 이벤트이므로 exited
+		}
+	}
+
+	// 즉시 서버에 보고
+	results := []types.ServiceState{*state}
+	if err := a.sendResults(results); err != nil {
+		log.Printf("[ERROR] Failed to send container event: %v", err)
+	} else {
+		log.Printf("[INFO] Container %s reported as %s", event.Name, state.ContainerState)
 	}
 }
 

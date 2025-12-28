@@ -21,6 +21,8 @@ import (
 	"health-agent/internal/types"
 
 	dockertypes "github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/events"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 )
 
@@ -182,6 +184,11 @@ func (c *Checker) createClosedState(name string, cont dockertypes.Container) typ
 	}
 }
 
+// 기본 무시 패턴 (항상 적용)
+var defaultIgnorePatterns = []string{
+	"*temp*", // temp 포함 컨테이너 제외
+}
+
 // isInIgnoreList 컨테이너 이름이 무시 목록에 있는지 확인
 // 패턴 지원:
 //   - "nginx-dev"  : 정확히 일치
@@ -189,6 +196,13 @@ func (c *Checker) createClosedState(name string, cont dockertypes.Container) typ
 //   - "*-dev"      : -dev로 끝나는 모든 컨테이너
 //   - "*test*"     : test를 포함하는 모든 컨테이너
 func isInIgnoreList(name string, ignoreList []string) bool {
+	// 기본 무시 패턴 먼저 확인
+	for _, pattern := range defaultIgnorePatterns {
+		if matchPattern(name, pattern) {
+			return true
+		}
+	}
+	// 사용자 설정 무시 목록 확인
 	for _, pattern := range ignoreList {
 		if matchPattern(name, pattern) {
 			return true
@@ -941,4 +955,100 @@ func (c *Checker) getHTTPPort(cont dockertypes.Container) int {
 		return int(cont.Ports[0].PrivatePort)
 	}
 	return 8080
+}
+
+// ContainerEvent 컨테이너 이벤트 정보
+type ContainerEvent struct {
+	Name   string    // 컨테이너 이름
+	Action string    // stop, die, start 등
+	Time   time.Time // 이벤트 발생 시간
+}
+
+// StartEventsListener Docker 이벤트 리스너 시작
+// 컨테이너 stop/die 이벤트 발생 시 콜백 호출
+func (c *Checker) StartEventsListener(ctx context.Context, callback func(ContainerEvent)) error {
+	if c.client == nil {
+		return fmt.Errorf("Docker 클라이언트 없음")
+	}
+
+	// 컨테이너 이벤트만 필터링 (stop, die)
+	filterArgs := filters.NewArgs()
+	filterArgs.Add("type", "container")
+	filterArgs.Add("event", "stop")
+	filterArgs.Add("event", "die")
+
+	eventsChan, errChan := c.client.Events(ctx, dockertypes.EventsOptions{
+		Filters: filterArgs,
+	})
+
+	go func() {
+		log.Println("[INFO] Docker events listener started")
+		for {
+			select {
+			case <-ctx.Done():
+				log.Println("[INFO] Docker events listener stopped")
+				return
+			case event := <-eventsChan:
+				c.handleDockerEvent(event, callback)
+			case err := <-errChan:
+				if err != nil && ctx.Err() == nil {
+					log.Printf("[WARN] Docker events error: %v", err)
+				}
+				return
+			}
+		}
+	}()
+
+	return nil
+}
+
+// handleDockerEvent Docker 이벤트 처리
+func (c *Checker) handleDockerEvent(event events.Message, callback func(ContainerEvent)) {
+	name := event.Actor.Attributes["name"]
+	if name == "" {
+		return
+	}
+
+	// 무시 목록 확인
+	ignoreList := config.GetIgnoreList()
+	if isInIgnoreList(name, ignoreList) {
+		log.Printf("[DEBUG] Ignoring event for: %s", name)
+		return
+	}
+
+	log.Printf("[INFO] Docker event: %s %s", event.Action, name)
+
+	callback(ContainerEvent{
+		Name:   name,
+		Action: event.Action,
+		Time:   time.Unix(event.Time, 0),
+	})
+}
+
+// GetContainerState 특정 컨테이너의 현재 상태 조회
+func (c *Checker) GetContainerState(ctx context.Context, name string) *types.ServiceState {
+	if c.client == nil {
+		return nil
+	}
+
+	containers, err := c.client.ContainerList(ctx, dockertypes.ContainerListOptions{All: true})
+	if err != nil {
+		return nil
+	}
+
+	for _, cont := range containers {
+		contName := strings.TrimPrefix(cont.Names[0], "/")
+		if contName == name {
+			return &types.ServiceState{
+				ID:             fmt.Sprintf("%s_%s", getMachineID(), contName),
+				Name:           contName,
+				Type:           c.detectServiceType(cont),
+				CheckedAt:      time.Now(),
+				ContainerState: cont.State, // running, exited 등
+				Path:           cont.Image,
+			}
+		}
+	}
+
+	return nil
 }
