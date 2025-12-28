@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net"
@@ -44,6 +45,14 @@ type Checker struct {
 	lastResults      []types.ServiceState // 마지막 성공 결과 캐시
 	lastRunningNames map[string]bool      // 이전에 실행 중이었던 컨테이너 이름
 	browserChecker   *browser.Checker     // 브라우저 기반 네트워크 체커
+	resourceErrorCache map[string]*resourceErrorState // 리소스 에러 캐시 (안정화용)
+}
+
+// resourceErrorState 리소스 에러 상태 추적
+type resourceErrorState struct {
+	errors          []types.ResourceError // 마지막으로 감지된 에러들
+	consecutiveOK   int                   // 연속 정상 횟수
+	lastCheckedAt   time.Time
 }
 
 func New() *Checker {
@@ -75,9 +84,9 @@ func New() *Checker {
 	}
 
 	if err != nil {
-		return &Checker{timeout: 5 * time.Second, browserChecker: browserChk}
+		return &Checker{timeout: 5 * time.Second, browserChecker: browserChk, resourceErrorCache: make(map[string]*resourceErrorState)}
 	}
-	return &Checker{client: cli, timeout: 5 * time.Second, browserChecker: browserChk}
+	return &Checker{client: cli, timeout: 5 * time.Second, browserChecker: browserChk, resourceErrorCache: make(map[string]*resourceErrorState)}
 }
 
 func (c *Checker) Ping(ctx context.Context) error {
@@ -760,7 +769,7 @@ func (c *Checker) checkWebApp(ctx context.Context, cont dockertypes.Container, s
 
 		// 페이지가 정상이면 리소스 체크 (JS, CSS, 이미지 등)
 		if status == types.StatusUp {
-			resourceErrors := c.checkWebResources(pageURL)
+			resourceErrors := c.checkWebResourcesStable(state.Name, pageURL)
 			if len(resourceErrors) > 0 {
 				state.Status = types.StatusWarn
 				state.ResourceErrors = resourceErrors
@@ -1243,6 +1252,46 @@ func (c *Checker) getHTTPPort(cont dockertypes.Container) int {
 	return 8080
 }
 
+// checkWebResourcesStable 리소스 에러 상태를 안정화하여 반환
+// 에러가 발생하면 즉시 반영하지만, 복구는 3회 연속 정상이어야 반영
+func (c *Checker) checkWebResourcesStable(serviceID, pageURL string) []types.ResourceError {
+	currentErrors := c.checkWebResources(pageURL)
+
+	// 캐시 확인
+	cached, exists := c.resourceErrorCache[serviceID]
+
+	if len(currentErrors) > 0 {
+		// 에러 발견 → 즉시 캐시 업데이트하고 반환
+		c.resourceErrorCache[serviceID] = &resourceErrorState{
+			errors:        currentErrors,
+			consecutiveOK: 0,
+			lastCheckedAt: time.Now(),
+		}
+		return currentErrors
+	}
+
+	// 현재는 정상
+	if !exists || len(cached.errors) == 0 {
+		// 이전에도 정상이었으면 그냥 빈 배열 반환
+		return nil
+	}
+
+	// 이전에 에러가 있었고 현재는 정상
+	cached.consecutiveOK++
+	cached.lastCheckedAt = time.Now()
+
+	// 3회 연속 정상이면 복구로 처리
+	if cached.consecutiveOK >= 3 {
+		log.Printf("[INFO] %s: resource errors cleared after 3 consecutive OK checks", serviceID)
+		delete(c.resourceErrorCache, serviceID)
+		return nil
+	}
+
+	// 아직 안정화 안됨 - 이전 에러 유지
+	log.Printf("[DEBUG] %s: waiting for stable recovery (%d/3 OK)", serviceID, cached.consecutiveOK)
+	return cached.errors
+}
+
 // checkWebResources 웹 페이지 진입 시 모든 네트워크 리소스 상태 체크
 // Chrome이 있으면 실제 브라우저로 모든 네트워크 요청 캡처
 // Chrome이 없으면 HTML 파싱으로 fallback
@@ -1364,6 +1413,9 @@ func (c *Checker) parseSrcset(srcset string) []string {
 
 // checkAndAddError 리소스 URL 체크 후 에러 추가
 func (c *Checker) checkAndAddError(resourceURL, resType string, baseURL *url.URL, checked map[string]bool, errors *[]types.ResourceError) {
+	// HTML 엔티티 디코딩 (&amp; -> &, &lt; -> < 등)
+	resourceURL = html.UnescapeString(resourceURL)
+
 	// 스킵할 URL 패턴
 	if strings.HasPrefix(resourceURL, "data:") ||
 		strings.HasPrefix(resourceURL, "blob:") ||
