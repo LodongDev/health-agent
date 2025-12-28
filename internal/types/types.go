@@ -2,7 +2,7 @@ package types
 
 import "time"
 
-// 상태 타입
+// 상태 타입 (API에서 최종 판정, 에이전트는 참고용으로만 사용)
 type Status string
 
 const (
@@ -11,20 +11,14 @@ const (
 	StatusWarn     Status = "WARN"
 	StatusClosed   Status = "CLOSED"  // 사용자가 수동 종료 (docker stop)
 	StatusUnknown  Status = "UNKNOWN"
-	StatusDegraded Status = "WARN" // Degraded는 WARN으로 매핑
 )
 
-// HealthStatus 헬스체크 상태 (체커에서 사용)
-type HealthStatus = Status
-
-// HealthResult 헬스체크 결과
-type HealthResult struct {
-	Status       HealthStatus `json:"status"`
-	Message      string       `json:"message"`
-	ResponseTime int64        `json:"responseTime"` // ms
-	CheckedAt    time.Time    `json:"checkedAt"`
-	SSLError     bool         `json:"sslError,omitempty"`     // SSL 인증서 오류 여부
-	SSLMessage   string       `json:"sslMessage,omitempty"`   // SSL 오류 메시지
+// CheckResult HTTP 체크 결과 (raw 데이터)
+type CheckResult struct {
+	Success      bool   `json:"success"`      // 연결 성공 여부
+	StatusCode   int    `json:"statusCode"`   // HTTP 상태 코드 (0=연결실패)
+	ResponseTime int    `json:"responseTime"` // 응답 시간 (ms)
+	Error        string `json:"error,omitempty"` // 에러 메시지
 }
 
 // ContainerType 컨테이너 타입 정보
@@ -66,35 +60,38 @@ const (
 	TypeUnknown    ServiceType = "UNKNOWN"
 )
 
-// ServiceState 서비스 상태
+// ServiceState 서비스 상태 (에이전트 → API 전송용)
 type ServiceState struct {
-	ID           string      `json:"id"`
-	Name         string      `json:"name"`
-	Type         ServiceType `json:"type"`
-	Status       Status      `json:"status"`
-	Message      string      `json:"message"`
-	ResponseTime int         `json:"responseTime"` // ms
-	CheckedAt    time.Time   `json:"checkedAt"`
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	Type      ServiceType `json:"type"`
+	CheckedAt time.Time   `json:"checkedAt"`
+
+	// 컨테이너 상태 (running, exited, etc.)
+	ContainerState string `json:"containerState,omitempty"`
+
+	// HTTP 체크 결과 (raw 데이터 - API에서 상태 판정)
+	HttpCheck *CheckResult `json:"httpCheck,omitempty"`
 
 	// 추가 정보
 	Host       string `json:"host,omitempty"`
 	Port       int    `json:"port,omitempty"`
 	Endpoint   string `json:"endpoint,omitempty"`
-	Path       string `json:"path,omitempty"`       // 설정 파일 또는 실행 파일 경로
+	Path       string `json:"path,omitempty"`       // 이미지 또는 실행 파일 경로
 	ConfigPath string `json:"configPath,omitempty"` // 설정 파일 경로
 
 	// SSL 인증서 정보
-	SSLError   bool   `json:"sslError,omitempty"`   // SSL 인증서 오류 여부
-	SSLMessage string `json:"sslMessage,omitempty"` // SSL 오류 메시지
+	SSLError   bool   `json:"sslError,omitempty"`
+	SSLMessage string `json:"sslMessage,omitempty"`
 
-	// 웹 리소스 에러 정보
-	ResourceErrors []ResourceError `json:"resourceErrors,omitempty"` // 리소스 로딩 에러 목록
+	// 웹 리소스 체크 결과 (raw 데이터)
+	ResourceChecks []ResourceCheck `json:"resourceChecks,omitempty"`
 }
 
-// ResourceError 웹 리소스 로딩 에러
-type ResourceError struct {
-	URL        string `json:"url"`        // 리소스 URL
-	StatusCode int    `json:"statusCode"` // HTTP 상태 코드
+// ResourceCheck 리소스 체크 결과 (raw 데이터)
+type ResourceCheck struct {
+	URL        string `json:"url"`
+	StatusCode int    `json:"statusCode"` // 0=연결실패, 200=정상, 4xx/5xx=에러
 	Type       string `json:"type"`       // js, css, img 등
 }
 

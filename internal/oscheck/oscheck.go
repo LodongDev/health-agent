@@ -2,7 +2,9 @@ package oscheck
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -18,11 +20,28 @@ import (
 )
 
 type Checker struct {
-	timeout time.Duration
+	timeout    time.Duration
+	httpClient *http.Client // 공유 HTTP 클라이언트 (연결 재사용)
 }
 
 func New() *Checker {
-	return &Checker{timeout: 5 * time.Second}
+	// 공유 HTTP 클라이언트 생성 (연결 풀링)
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+			MaxIdleConns:        50,
+			MaxIdleConnsPerHost: 5,
+			MaxConnsPerHost:     10,
+			IdleConnTimeout:     30 * time.Second,
+			DisableKeepAlives:   false,
+		},
+	}
+
+	return &Checker{
+		timeout:    5 * time.Second,
+		httpClient: httpClient,
+	}
 }
 
 func (c *Checker) CheckAll() []types.ServiceState {
@@ -56,32 +75,38 @@ func (c *Checker) CheckMySQL() *types.ServiceState {
 		return nil
 	}
 	state := &types.ServiceState{
-		ID: "os-mysql", Name: "MySQL (OS)", Type: types.TypeMySQL,
-		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ID:         "os-mysql",
+		Name:       "MySQL (OS)",
+		Type:       types.TypeMySQL,
+		Host:       "localhost",
+		Port:       port,
+		CheckedAt:  time.Now(),
 		ConfigPath: configPath,
 		Path:       c.findExecutable("mysqld", "mysql"),
 	}
+
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), c.timeout)
+	elapsed := int(time.Since(start).Milliseconds())
+
 	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("연결 실패: %v", err)
-		state.ResponseTime = int(time.Since(start).Milliseconds())
+		state.ContainerState = "inactive"
+		state.HttpCheck = &types.CheckResult{
+			Success:      false,
+			StatusCode:   0,
+			ResponseTime: elapsed,
+			Error:        err.Error(),
+		}
 		return state
 	}
 	conn.Close()
-	if c.commandExists("mysqladmin") {
-		cmd := exec.Command("mysqladmin", "ping", "-h", "localhost", fmt.Sprintf("-P%d", port))
-		if err := cmd.Run(); err != nil {
-			state.Status = types.StatusWarn
-			state.Message = fmt.Sprintf("포트 %d 연결됨, ping 실패", port)
-			state.ResponseTime = int(time.Since(start).Milliseconds())
-			return state
-		}
+
+	state.ContainerState = "active"
+	state.HttpCheck = &types.CheckResult{
+		Success:      true,
+		StatusCode:   200, // TCP 연결 성공
+		ResponseTime: elapsed,
 	}
-	state.Status = types.StatusUp
-	state.Message = fmt.Sprintf("포트 %d 정상", port)
-	state.ResponseTime = int(time.Since(start).Milliseconds())
 	return state
 }
 
@@ -110,32 +135,38 @@ func (c *Checker) CheckPostgreSQL() *types.ServiceState {
 		return nil
 	}
 	state := &types.ServiceState{
-		ID: "os-postgresql", Name: "PostgreSQL (OS)", Type: types.TypePostgreSQL,
-		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ID:         "os-postgresql",
+		Name:       "PostgreSQL (OS)",
+		Type:       types.TypePostgreSQL,
+		Host:       "localhost",
+		Port:       port,
+		CheckedAt:  time.Now(),
 		ConfigPath: configPath,
 		Path:       c.findExecutable("postgres", "postgresql"),
 	}
+
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), c.timeout)
+	elapsed := int(time.Since(start).Milliseconds())
+
 	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("연결 실패: %v", err)
-		state.ResponseTime = int(time.Since(start).Milliseconds())
+		state.ContainerState = "inactive"
+		state.HttpCheck = &types.CheckResult{
+			Success:      false,
+			StatusCode:   0,
+			ResponseTime: elapsed,
+			Error:        err.Error(),
+		}
 		return state
 	}
 	conn.Close()
-	if c.commandExists("pg_isready") {
-		cmd := exec.Command("pg_isready", "-h", "localhost", "-p", strconv.Itoa(port))
-		if err := cmd.Run(); err != nil {
-			state.Status = types.StatusWarn
-			state.Message = fmt.Sprintf("포트 %d 연결됨, pg_isready 실패", port)
-			state.ResponseTime = int(time.Since(start).Milliseconds())
-			return state
-		}
+
+	state.ContainerState = "active"
+	state.HttpCheck = &types.CheckResult{
+		Success:      true,
+		StatusCode:   200,
+		ResponseTime: elapsed,
 	}
-	state.Status = types.StatusUp
-	state.Message = fmt.Sprintf("포트 %d 정상", port)
-	state.ResponseTime = int(time.Since(start).Milliseconds())
 	return state
 }
 
@@ -166,17 +197,27 @@ func (c *Checker) CheckRedis() *types.ServiceState {
 		return nil
 	}
 	state := &types.ServiceState{
-		ID: "os-redis", Name: "Redis (OS)", Type: types.TypeRedis,
-		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ID:         "os-redis",
+		Name:       "Redis (OS)",
+		Type:       types.TypeRedis,
+		Host:       "localhost",
+		Port:       port,
+		CheckedAt:  time.Now(),
 		ConfigPath: configPath,
 		Path:       c.findExecutable("redis-server"),
 	}
+
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), c.timeout)
 	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("연결 실패: %v", err)
-		state.ResponseTime = int(time.Since(start).Milliseconds())
+		elapsed := int(time.Since(start).Milliseconds())
+		state.ContainerState = "inactive"
+		state.HttpCheck = &types.CheckResult{
+			Success:      false,
+			StatusCode:   0,
+			ResponseTime: elapsed,
+			Error:        err.Error(),
+		}
 		return state
 	}
 	conn.SetDeadline(time.Now().Add(c.timeout))
@@ -184,38 +225,16 @@ func (c *Checker) CheckRedis() *types.ServiceState {
 	// RESP 프로토콜로 PING 전송
 	conn.Write([]byte("*1\r\n$4\r\nPING\r\n"))
 	buf := make([]byte, 128)
-	n, err := conn.Read(buf)
+	n, _ := conn.Read(buf)
 	conn.Close()
 	elapsed := int(time.Since(start).Milliseconds())
-	response := string(buf[:n])
 
-	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("Redis 응답 실패: %v", err)
-		state.ResponseTime = elapsed
-		return state
+	state.ContainerState = "active"
+	state.HttpCheck = &types.CheckResult{
+		Success:      true,
+		StatusCode:   200, // Redis 연결 성공
+		ResponseTime: elapsed,
 	}
-
-	// PONG 응답 확인
-	if strings.Contains(response, "PONG") {
-		state.Status = types.StatusUp
-		state.Message = fmt.Sprintf("포트 %d PONG 응답 정상", port)
-		state.ResponseTime = elapsed
-		return state
-	}
-
-	// 인증 필요한 경우
-	if strings.Contains(response, "NOAUTH") || strings.Contains(response, "AUTH") {
-		state.Status = types.StatusUp // 서버는 정상 동작 중
-		state.Message = fmt.Sprintf("포트 %d 정상 (인증 필요)", port)
-		state.ResponseTime = elapsed
-		return state
-	}
-
-	// 기타 응답
-	state.Status = types.StatusWarn
-	state.Message = fmt.Sprintf("포트 %d 연결됨, 응답: %s", port, strings.TrimSpace(response))
-	state.ResponseTime = elapsed
 	return state
 }
 
@@ -243,23 +262,38 @@ func (c *Checker) CheckMongoDB() *types.ServiceState {
 		return nil
 	}
 	state := &types.ServiceState{
-		ID: "os-mongodb", Name: "MongoDB (OS)", Type: types.TypeMongoDB,
-		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ID:         "os-mongodb",
+		Name:       "MongoDB (OS)",
+		Type:       types.TypeMongoDB,
+		Host:       "localhost",
+		Port:       port,
+		CheckedAt:  time.Now(),
 		ConfigPath: configPath,
 		Path:       c.findExecutable("mongod"),
 	}
+
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), c.timeout)
+	elapsed := int(time.Since(start).Milliseconds())
+
 	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("연결 실패: %v", err)
-		state.ResponseTime = int(time.Since(start).Milliseconds())
+		state.ContainerState = "inactive"
+		state.HttpCheck = &types.CheckResult{
+			Success:      false,
+			StatusCode:   0,
+			ResponseTime: elapsed,
+			Error:        err.Error(),
+		}
 		return state
 	}
 	conn.Close()
-	state.Status = types.StatusUp
-	state.Message = fmt.Sprintf("포트 %d 정상", port)
-	state.ResponseTime = int(time.Since(start).Milliseconds())
+
+	state.ContainerState = "active"
+	state.HttpCheck = &types.CheckResult{
+		Success:      true,
+		StatusCode:   200,
+		ResponseTime: elapsed,
+	}
 	return state
 }
 
@@ -397,12 +431,8 @@ func (c *Checker) CheckNginx() *types.ServiceState {
 	log.Printf("[DEBUG] Nginx check: isActive=%v, port=%d, config=%s, exec=%s", isActive, port, configPath, execPath)
 
 	// 서비스가 활성화되지 않았고 포트도 없으면 설치되지 않은 것으로 간주
-	if !isActive && port == 0 {
-		// nginx 실행 파일도 없으면 nil
-		if execPath == "" {
-			log.Printf("[DEBUG] Nginx not found (no systemctl, no port, no executable)")
-			return nil
-		}
+	if !isActive && port == 0 && execPath == "" {
+		return nil
 	}
 
 	// 포트가 0이면 기본 포트 사용
@@ -411,33 +441,52 @@ func (c *Checker) CheckNginx() *types.ServiceState {
 	}
 
 	state := &types.ServiceState{
-		ID: "os-nginx", Name: "Nginx (OS)", Type: types.TypeWebNginx,
-		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ID:         "os-nginx",
+		Name:       "Nginx (OS)",
+		Type:       types.TypeWebNginx,
+		Host:       "localhost",
+		Port:       port,
+		CheckedAt:  time.Now(),
 		ConfigPath: configPath,
 		Path:       execPath,
 	}
+
+	// systemctl 기반 상태
+	if isActive {
+		state.ContainerState = "active"
+	} else {
+		state.ContainerState = "inactive"
+	}
+
+	// HTTP 체크
+	state.HttpCheck = c.doHTTPCheck(fmt.Sprintf("http://localhost:%d/", port))
+	return state
+}
+
+// doHTTPCheck HTTP 요청으로 raw 데이터 수집 (공유 클라이언트 사용)
+func (c *Checker) doHTTPCheck(checkURL string) *types.CheckResult {
 	start := time.Now()
 
-	// systemctl에서 비활성 상태면 DOWN
-	if !isActive {
-		state.Status = types.StatusDown
-		state.Message = "서비스 비활성 (systemctl)"
-		state.ResponseTime = int(time.Since(start).Milliseconds())
-		return state
-	}
+	resp, err := c.httpClient.Get(checkURL)
+	elapsed := int(time.Since(start).Milliseconds())
 
-	// HTTP 요청으로 응답 확인
-	checkURL := fmt.Sprintf("http://localhost:%d/", port)
-	status, msg, elapsed := c.httpCheck(checkURL)
-	log.Printf("[DEBUG] Nginx HTTP check: %s -> status=%s, msg=%s, elapsed=%dms", checkURL, status, msg, elapsed)
-
-	state.Status = status
-	state.Message = msg
-	state.ResponseTime = elapsed
-	if elapsed == 0 {
-		state.ResponseTime = int(time.Since(start).Milliseconds())
+	if err != nil {
+		return &types.CheckResult{
+			Success:      false,
+			StatusCode:   0,
+			ResponseTime: elapsed,
+			Error:        err.Error(),
+		}
 	}
-	return state
+	// 연결 재사용을 위해 응답 본문을 완전히 drain
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	return &types.CheckResult{
+		Success:      true,
+		StatusCode:   resp.StatusCode,
+		ResponseTime: elapsed,
+	}
 }
 
 func (c *Checker) getNginxPortAndPath() (int, string) {
@@ -500,12 +549,8 @@ func (c *Checker) CheckHTTPD() *types.ServiceState {
 		isActiveHttpd, isActiveApache2, port, configPath, execPath)
 
 	// 서비스가 활성화되지 않았고 포트도 없으면 설치되지 않은 것으로 간주
-	if !isActive && port == 0 {
-		// httpd/apache2 실행 파일도 없으면 nil
-		if execPath == "" {
-			log.Printf("[DEBUG] HTTPD not found (no systemctl, no port, no executable)")
-			return nil
-		}
+	if !isActive && port == 0 && execPath == "" {
+		return nil
 	}
 
 	// 포트가 0이면 기본 포트 사용
@@ -514,32 +559,25 @@ func (c *Checker) CheckHTTPD() *types.ServiceState {
 	}
 
 	state := &types.ServiceState{
-		ID: "os-httpd", Name: "Apache HTTPD (OS)", Type: types.TypeWebApache,
-		Host: "localhost", Port: port, CheckedAt: time.Now(),
+		ID:         "os-httpd",
+		Name:       "Apache HTTPD (OS)",
+		Type:       types.TypeWebApache,
+		Host:       "localhost",
+		Port:       port,
+		CheckedAt:  time.Now(),
 		ConfigPath: configPath,
 		Path:       execPath,
 	}
-	start := time.Now()
 
-	// systemctl에서 비활성 상태면 DOWN
-	if !isActive {
-		state.Status = types.StatusDown
-		state.Message = "서비스 비활성 (systemctl)"
-		state.ResponseTime = int(time.Since(start).Milliseconds())
-		return state
+	// systemctl 기반 상태
+	if isActive {
+		state.ContainerState = "active"
+	} else {
+		state.ContainerState = "inactive"
 	}
 
-	// HTTP 요청으로 응답 확인
-	checkURL := fmt.Sprintf("http://localhost:%d/", port)
-	status, msg, elapsed := c.httpCheck(checkURL)
-	log.Printf("[DEBUG] HTTPD HTTP check: %s -> status=%s, msg=%s, elapsed=%dms", checkURL, status, msg, elapsed)
-
-	state.Status = status
-	state.Message = msg
-	state.ResponseTime = elapsed
-	if elapsed == 0 {
-		state.ResponseTime = int(time.Since(start).Milliseconds())
-	}
+	// HTTP 체크
+	state.HttpCheck = c.doHTTPCheck(fmt.Sprintf("http://localhost:%d/", port))
 	return state
 }
 
@@ -590,32 +628,3 @@ func (c *Checker) parseHTTPDListenPort(path string) int {
 	return 0
 }
 
-// httpCheck HTTP 요청으로 상태 확인
-func (c *Checker) httpCheck(url string) (types.Status, string, int) {
-	start := time.Now()
-	client := &net.Dialer{Timeout: c.timeout}
-	conn, err := client.Dial("tcp", strings.TrimPrefix(strings.TrimPrefix(url, "http://"), "https://"))
-	if err != nil {
-		return types.StatusDown, fmt.Sprintf("연결 실패: %v", err), int(time.Since(start).Milliseconds())
-	}
-	conn.Close()
-
-	// HTTP GET 요청
-	resp, err := (&http.Client{Timeout: c.timeout}).Get(url)
-	elapsed := int(time.Since(start).Milliseconds())
-	if err != nil {
-		return types.StatusDown, fmt.Sprintf("HTTP 요청 실패: %v", err), elapsed
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return types.StatusUp, fmt.Sprintf("%d OK", resp.StatusCode), elapsed
-	}
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		return types.StatusWarn, fmt.Sprintf("%d %s", resp.StatusCode, resp.Status), elapsed
-	}
-	if resp.StatusCode >= 500 {
-		return types.StatusDown, fmt.Sprintf("%d %s", resp.StatusCode, resp.Status), elapsed
-	}
-	return types.StatusUp, fmt.Sprintf("%d %s", resp.StatusCode, resp.Status), elapsed
-}

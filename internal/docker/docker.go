@@ -41,18 +41,11 @@ func getMachineID() string {
 
 type Checker struct {
 	client           *client.Client
+	httpClient       *http.Client         // 공유 HTTP 클라이언트 (연결 재사용)
 	timeout          time.Duration
 	lastResults      []types.ServiceState // 마지막 성공 결과 캐시
 	lastRunningNames map[string]bool      // 이전에 실행 중이었던 컨테이너 이름
 	browserChecker   *browser.Checker     // 브라우저 기반 네트워크 체커
-	resourceErrorCache map[string]*resourceErrorState // 리소스 에러 캐시 (안정화용)
-}
-
-// resourceErrorState 리소스 에러 상태 추적
-type resourceErrorState struct {
-	errors          []types.ResourceError // 마지막으로 감지된 에러들
-	consecutiveOK   int                   // 연속 정상 횟수
-	lastCheckedAt   time.Time
 }
 
 func New() *Checker {
@@ -74,6 +67,19 @@ func New() *Checker {
 		)
 	}
 
+	// 공유 HTTP 클라이언트 (연결 풀 설정으로 "too many open files" 방지)
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+			MaxIdleConns:        100,              // 최대 유휴 연결 수
+			MaxIdleConnsPerHost: 10,               // 호스트당 최대 유휴 연결
+			MaxConnsPerHost:     20,               // 호스트당 최대 연결 수
+			IdleConnTimeout:     30 * time.Second, // 유휴 연결 타임아웃
+			DisableKeepAlives:   false,            // Keep-Alive 활성화
+		},
+	}
+
 	// 브라우저 체커 초기화
 	browserChk := browser.New()
 	if browserChk.IsAvailable() {
@@ -84,9 +90,9 @@ func New() *Checker {
 	}
 
 	if err != nil {
-		return &Checker{timeout: 5 * time.Second, browserChecker: browserChk, resourceErrorCache: make(map[string]*resourceErrorState)}
+		return &Checker{timeout: 5 * time.Second, httpClient: httpClient, browserChecker: browserChk}
 	}
-	return &Checker{client: cli, timeout: 5 * time.Second, browserChecker: browserChk, resourceErrorCache: make(map[string]*resourceErrorState)}
+	return &Checker{client: cli, timeout: 5 * time.Second, httpClient: httpClient, browserChecker: browserChk}
 }
 
 func (c *Checker) Ping(ctx context.Context) error {
@@ -164,17 +170,15 @@ func (c *Checker) CheckAll(ctx context.Context) ([]types.ServiceState, error) {
 	return results, nil
 }
 
-// createClosedState 수동 종료된 컨테이너의 CLOSED 상태 생성
+// createClosedState 수동 종료된 컨테이너의 상태 생성 (exited 상태로 API에 전달)
 func (c *Checker) createClosedState(name string, cont dockertypes.Container) types.ServiceState {
 	return types.ServiceState{
-		ID:           name, // 컨테이너 이름 = 서비스 ID (serverIp + name으로 고유성 보장)
-		Name:         name,
-		Type:         types.TypeDocker,
-		Status:       types.StatusClosed,
-		Message:      "컨테이너 수동 종료 (docker stop)",
-		ResponseTime: 0,
-		CheckedAt:    time.Now(),
-		Path:         cont.Image,
+		ID:             name,
+		Name:           name,
+		Type:           types.TypeDocker,
+		CheckedAt:      time.Now(),
+		ContainerState: cont.State, // "exited"
+		Path:           cont.Image,
 	}
 }
 
@@ -227,22 +231,20 @@ func matchPattern(name, pattern string) bool {
 func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container) types.ServiceState {
 	name := strings.TrimPrefix(cont.Names[0], "/")
 	svcType := c.detectServiceType(cont)
-	start := time.Now()
 
 	// 서비스 ID = 컨테이너 이름 (serverIp + name으로 고유성 보장)
 	state := types.ServiceState{
-		ID:        name,
-		Name:      name,
-		Type:      svcType,
-		CheckedAt: time.Now(),
+		ID:             name,
+		Name:           name,
+		Type:           svcType,
+		CheckedAt:      time.Now(),
+		ContainerState: cont.State, // running, exited, etc.
+		Path:           cont.Image,
 	}
 
 	// 컨테이너 상세 정보 가져오기
 	inspect, err := c.client.ContainerInspect(ctx, cont.ID)
 	if err == nil {
-		// 이미지 이름을 경로로 사용
-		state.Path = cont.Image
-
 		// 컨테이너 IP 설정
 		for _, network := range inspect.NetworkSettings.Networks {
 			if network.IPAddress != "" {
@@ -258,45 +260,38 @@ func (c *Checker) checkContainer(ctx context.Context, cont dockertypes.Container
 				break
 			}
 		}
-
-		// Docker HEALTHCHECK가 unhealthy면 바로 반환
-		if inspect.State.Health != nil && inspect.State.Health.Status == "unhealthy" {
-			state.Status = types.StatusDown
-			state.Message = "Docker HEALTHCHECK: unhealthy"
-			state.ResponseTime = int(time.Since(start).Milliseconds())
-			return state
-		}
-		// healthy인 경우에도 실제 HTTP 체크를 수행하여 응답시간 측정
 	}
 
-	// 서비스 타입별 체크
+	// 컨테이너가 running이 아니면 HTTP 체크 안함
+	if cont.State != "running" {
+		log.Printf("[DEBUG] Container %s: state=%s (not running, skip HTTP check)", name, cont.State)
+		return state
+	}
+
+	// 서비스 타입별 HTTP 체크 (raw 데이터 수집)
 	log.Printf("[DEBUG] Container %s: type=%s, image=%s", name, svcType, cont.Image)
 	switch svcType {
 	case types.TypeAPIJava:
-		log.Printf("[DEBUG] %s -> checkSpringApp", name)
-		state = c.checkSpringApp(ctx, cont, state)
+		state.HttpCheck = c.checkHTTP(ctx, cont, []string{"/actuator/health", "/health", "/"})
 	case types.TypeWebNginx, types.TypeWebApache, types.TypeWeb:
-		log.Printf("[DEBUG] %s -> checkWebApp", name)
-		state = c.checkWebApp(ctx, cont, state)
-	case types.TypeAPI, types.TypeAPIPython, types.TypeAPINode, types.TypeAPIGo:
-		log.Printf("[DEBUG] %s -> checkAPIApp", name)
-		state = c.checkAPIApp(ctx, cont, state)
-	case types.TypeMySQL, types.TypePostgreSQL, types.TypeRedis, types.TypeMongoDB:
-		log.Printf("[DEBUG] %s -> checkDBService", name)
-		state = c.checkDBService(ctx, cont, state)
-	default:
-		log.Printf("[DEBUG] %s -> default (no HTTP check)", name)
-		// running 상태만 확인
-		if cont.State == "running" {
-			state.Status = types.StatusUp
-			state.Message = "컨테이너 실행 중"
-		} else {
-			state.Status = types.StatusDown
-			state.Message = fmt.Sprintf("상태: %s", cont.State)
+		state.HttpCheck = c.checkHTTP(ctx, cont, []string{"/"})
+		// 웹 서비스는 리소스 체크도 수행
+		if state.HttpCheck != nil && state.HttpCheck.Success {
+			state.ResourceChecks = c.checkWebResources(ctx, cont)
 		}
-		state.ResponseTime = int(time.Since(start).Milliseconds())
+	case types.TypeAPI, types.TypeAPIPython, types.TypeAPINode, types.TypeAPIGo:
+		state.HttpCheck = c.checkHTTP(ctx, cont, []string{"/health", "/api/health", "/"})
+	case types.TypeMySQL, types.TypePostgreSQL, types.TypeRedis, types.TypeMongoDB:
+		state.HttpCheck = c.checkDBConnection(ctx, cont, svcType)
+	default:
+		// 기본: HTTP 체크 안함, 컨테이너 상태만 전송
+		log.Printf("[DEBUG] %s -> no HTTP check (type=%s)", name, svcType)
 	}
-	log.Printf("[DEBUG] %s: status=%s, responseTime=%dms, msg=%s", name, state.Status, state.ResponseTime, state.Message)
+
+	if state.HttpCheck != nil {
+		log.Printf("[DEBUG] %s: httpCheck success=%v, statusCode=%d, responseTime=%dms",
+			name, state.HttpCheck.Success, state.HttpCheck.StatusCode, state.HttpCheck.ResponseTime)
+	}
 	return state
 }
 
@@ -713,204 +708,64 @@ func (c *Checker) fileExistsInContainer(ctx context.Context, containerID, path s
 	return false
 }
 
-func (c *Checker) checkSpringApp(ctx context.Context, cont dockertypes.Container, state types.ServiceState) types.ServiceState {
+// checkHTTP HTTP 요청으로 raw 데이터 수집 (상태 판정은 API에서)
+func (c *Checker) checkHTTP(ctx context.Context, cont dockertypes.Container, endpoints []string) *types.CheckResult {
 	ip := c.getContainerIP(ctx, cont.ID)
 	port := c.getHTTPPort(cont)
 
-	endpoints := []string{"/actuator/health", "/health", "/"}
-	var lastElapsed int
-	var lastMsg string
-	var lastEndpoint string
-
-	for _, ep := range endpoints {
-		url := fmt.Sprintf("http://%s:%d%s", ip, port, ep)
-		status, msg, elapsed := c.httpCheck(url)
-		lastElapsed = elapsed
-		lastMsg = msg
-		lastEndpoint = ep
-
-		// UP 또는 WARN(느림) = 응답 받음 → 성공
-		if status != types.StatusDown {
-			state.Status = status
-			state.Message = msg
-			state.Endpoint = ep
-			state.ResponseTime = elapsed
-			return state
-		}
-	}
-	// 모든 endpoint 연결 실패
-	state.Status = types.StatusDown
-	state.Message = lastMsg
-	state.Endpoint = lastEndpoint
-	state.ResponseTime = lastElapsed
-	return state
-}
-
-func (c *Checker) checkWebApp(ctx context.Context, cont dockertypes.Container, state types.ServiceState) types.ServiceState {
-	ip := c.getContainerIP(ctx, cont.ID)
-	port := c.getHTTPPort(cont)
-
-	// HTTPS 포트인 경우 HTTPS로 체크
+	// HTTPS 포트인 경우
 	protocol := "http"
 	if port == 443 {
 		protocol = "https"
 	}
 
-	pageURL := fmt.Sprintf("%s://%s:%d/", protocol, ip, port)
-	status, msg, elapsed, sslError, sslMessage := c.httpCheckWithSSL(pageURL)
-
-	if status != types.StatusDown {
-		state.Status = status
-		state.Message = msg
-		state.Endpoint = "/"
-		state.ResponseTime = elapsed
-		state.SSLError = sslError
-		state.SSLMessage = sslMessage
-
-		// 페이지가 정상이면 리소스 체크 (JS, CSS, 이미지 등)
-		if status == types.StatusUp {
-			resourceErrors := c.checkWebResourcesStable(state.Name, pageURL)
-			if len(resourceErrors) > 0 {
-				state.Status = types.StatusWarn
-				state.ResourceErrors = resourceErrors
-				state.Message = fmt.Sprintf("리소스 에러 %d개 발견", len(resourceErrors))
-				log.Printf("[WARN] %s: %d resource errors found", state.Name, len(resourceErrors))
-			}
-		}
-		return state
-	}
-
-	// 연결 실패 시 컨테이너의 다른 노출 포트 시도
-	for _, p := range cont.Ports {
-		tryPort := int(p.PrivatePort)
-		if tryPort == port {
-			continue
-		}
-		tryProtocol := "http"
-		if tryPort == 443 {
-			tryProtocol = "https"
-		}
-		fallbackURL := fmt.Sprintf("%s://%s:%d/", tryProtocol, ip, tryPort)
-		fbStatus, fbMsg, fbElapsed, fbSSLError, fbSSLMessage := c.httpCheckWithSSL(fallbackURL)
-		if fbStatus != types.StatusDown {
-			state.Status = fbStatus
-			state.Message = fbMsg
-			state.Port = tryPort
-			state.Endpoint = "/"
-			state.ResponseTime = fbElapsed
-			state.SSLError = fbSSLError
-			state.SSLMessage = fbSSLMessage
-			return state
-		}
-	}
-
-	// 일반적인 웹 포트 시도 (Next.js, React 등 포함)
-	fallbackPorts := []int{3000, 8080, 80, 443, 8000, 5000, 11242, 11240, 11241, 11243, 11244, 11245}
-	for _, fp := range fallbackPorts {
-		if fp == port {
-			continue
-		}
-		tryProtocol := "http"
-		if fp == 443 {
-			tryProtocol = "https"
-		}
-		fallbackURL := fmt.Sprintf("%s://%s:%d/", tryProtocol, ip, fp)
-		fbStatus, fbMsg, fbElapsed, fbSSLError, fbSSLMessage := c.httpCheckWithSSL(fallbackURL)
-		if fbStatus != types.StatusDown {
-			state.Status = fbStatus
-			state.Message = fbMsg
-			state.Port = fp
-			state.Endpoint = "/"
-			state.ResponseTime = fbElapsed
-			state.SSLError = fbSSLError
-			state.SSLMessage = fbSSLMessage
-			return state
-		}
-	}
-
-	state.Status = status
-	state.Message = msg
-	state.Endpoint = "/"
-	state.ResponseTime = elapsed
-	state.SSLError = sslError
-	state.SSLMessage = sslMessage
-	return state
-}
-
-func (c *Checker) checkAPIApp(ctx context.Context, cont dockertypes.Container, state types.ServiceState) types.ServiceState {
-	ip := c.getContainerIP(ctx, cont.ID)
-	port := c.getHTTPPort(cont)
-
-	endpoints := []string{"/health", "/api/health", "/"}
-	var lastElapsed int
-	var lastMsg string
-	var lastEndpoint string
-
-	// 1. 기본 포트로 시도
 	for _, ep := range endpoints {
-		url := fmt.Sprintf("http://%s:%d%s", ip, port, ep)
-		status, msg, elapsed := c.httpCheck(url)
-		lastElapsed = elapsed
-		lastMsg = msg
-		lastEndpoint = ep
+		checkURL := fmt.Sprintf("%s://%s:%d%s", protocol, ip, port, ep)
+		result := c.doHTTPCheck(checkURL)
 
-		if status != types.StatusDown {
-			state.Status = status
-			state.Message = msg
-			state.Endpoint = ep
-			state.ResponseTime = elapsed
-			return state
+		// 연결 성공하면 반환 (상태 코드와 관계없이)
+		if result.Success {
+			return result
 		}
 	}
 
-	// 2. 기본 포트 실패 시 컨테이너의 다른 노출 포트 시도
-	for _, p := range cont.Ports {
-		tryPort := int(p.PrivatePort)
-		if tryPort == port {
-			continue
-		}
-		url := fmt.Sprintf("http://%s:%d/", ip, tryPort)
-		status, msg, elapsed := c.httpCheck(url)
-		if status != types.StatusDown {
-			state.Status = status
-			state.Message = msg
-			state.Endpoint = "/"
-			state.Port = tryPort
-			state.ResponseTime = elapsed
-			return state
-		}
-	}
-
-	// 3. 여전히 실패 시 일반적인 포트 시도 (최대 5개)
-	fallbackPorts := []int{8080, 3000, 8000, 5000, 80}
-	for _, fp := range fallbackPorts {
-		if fp == port {
-			continue
-		}
-		url := fmt.Sprintf("http://%s:%d/", ip, fp)
-		status, msg, elapsed := c.httpCheck(url)
-		if status != types.StatusDown {
-			state.Status = status
-			state.Message = msg
-			state.Endpoint = "/"
-			state.Port = fp
-			state.ResponseTime = elapsed
-			return state
-		}
-	}
-
-	state.Status = types.StatusDown
-	state.Message = lastMsg
-	state.Endpoint = lastEndpoint
-	state.ResponseTime = lastElapsed
-	return state
+	// 모든 endpoint 실패 시 마지막 결과 반환
+	checkURL := fmt.Sprintf("%s://%s:%d/", protocol, ip, port)
+	return c.doHTTPCheck(checkURL)
 }
 
-func (c *Checker) checkDBService(ctx context.Context, cont dockertypes.Container, state types.ServiceState) types.ServiceState {
+// doHTTPCheck 단일 URL에 대한 HTTP 체크 (raw 데이터)
+func (c *Checker) doHTTPCheck(checkURL string) *types.CheckResult {
+	start := time.Now()
+
+	resp, err := c.httpClient.Get(checkURL)
+	elapsed := int(time.Since(start).Milliseconds())
+
+	if err != nil {
+		return &types.CheckResult{
+			Success:      false,
+			StatusCode:   0,
+			ResponseTime: elapsed,
+			Error:        err.Error(),
+		}
+	}
+	// Body를 완전히 읽어서 연결 재사용 가능하게 함
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	return &types.CheckResult{
+		Success:      true,
+		StatusCode:   resp.StatusCode,
+		ResponseTime: elapsed,
+	}
+}
+
+// checkDBConnection DB 연결 체크 (raw 데이터)
+func (c *Checker) checkDBConnection(ctx context.Context, cont dockertypes.Container, svcType types.ServiceType) *types.CheckResult {
 	ip := c.getContainerIP(ctx, cont.ID)
 	var port int
 
-	switch state.Type {
+	switch svcType {
 	case types.TypeMySQL:
 		port = 3306
 	case types.TypePostgreSQL:
@@ -923,304 +778,140 @@ func (c *Checker) checkDBService(ctx context.Context, cont dockertypes.Container
 		port = 0
 	}
 
-	state.Port = port
-	state.Host = ip
-
-	// 타입별 실제 체크
-	switch state.Type {
-	case types.TypeRedis:
-		return c.checkRedis(ip, port, state)
-	case types.TypeMySQL:
-		return c.checkMySQL(ip, port, state)
-	case types.TypePostgreSQL:
-		return c.checkPostgreSQL(ip, port, state)
-	case types.TypeMongoDB:
-		return c.checkMongoDB(ip, port, state)
-	default:
-		return c.checkTCPPort(ip, port, state)
-	}
-}
-
-// checkRedis Redis PING 명령으로 실제 동작 확인
-func (c *Checker) checkRedis(ip string, port int, state types.ServiceState) types.ServiceState {
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), c.timeout)
-	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("Redis 연결 실패: %v", err)
-		state.ResponseTime = int(time.Since(start).Milliseconds())
-		return state
-	}
-	defer conn.Close()
-
-	// Redis PING 명령 전송 (RESP 프로토콜)
-	conn.SetDeadline(time.Now().Add(c.timeout))
-	_, err = conn.Write([]byte("*1\r\n$4\r\nPING\r\n"))
-	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("Redis PING 전송 실패: %v", err)
-		state.ResponseTime = int(time.Since(start).Milliseconds())
-		return state
-	}
-
-	// 응답 읽기
-	buf := make([]byte, 64)
-	n, err := conn.Read(buf)
 	elapsed := int(time.Since(start).Milliseconds())
 
 	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("Redis 응답 실패: %v", err)
-		state.ResponseTime = elapsed
-		return state
-	}
-
-	response := string(buf[:n])
-	if strings.Contains(response, "PONG") || strings.Contains(response, "+PONG") {
-		state.Status = types.StatusUp
-		state.Message = "Redis PONG 응답 정상"
-		state.ResponseTime = elapsed
-		return state
-	}
-
-	// 인증 필요한 경우
-	if strings.Contains(response, "NOAUTH") || strings.Contains(response, "AUTH") {
-		state.Status = types.StatusWarn
-		state.Message = "Redis 인증 필요 (서버 응답 중)"
-		state.ResponseTime = elapsed
-		return state
-	}
-
-	state.Status = types.StatusWarn
-	state.Message = fmt.Sprintf("Redis 응답: %s", strings.TrimSpace(response))
-	state.ResponseTime = elapsed
-	return state
-}
-
-// checkMySQL MySQL 프로토콜 핸드셰이크 확인
-func (c *Checker) checkMySQL(ip string, port int, state types.ServiceState) types.ServiceState {
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), c.timeout)
-	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("MySQL 연결 실패: %v", err)
-		state.ResponseTime = int(time.Since(start).Milliseconds())
-		return state
-	}
-	defer conn.Close()
-
-	// MySQL 서버는 연결 시 핸드셰이크 패킷을 보냄
-	conn.SetDeadline(time.Now().Add(c.timeout))
-	buf := make([]byte, 256)
-	n, err := conn.Read(buf)
-	elapsed := int(time.Since(start).Milliseconds())
-
-	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("MySQL 핸드셰이크 실패: %v", err)
-		state.ResponseTime = elapsed
-		return state
-	}
-
-	// MySQL 핸드셰이크 패킷 확인 (최소 4바이트, 프로토콜 버전 포함)
-	if n >= 5 && buf[4] == 10 { // Protocol version 10
-		// 서버 버전 문자열 추출 (null-terminated)
-		version := ""
-		for i := 5; i < n && buf[i] != 0; i++ {
-			version += string(buf[i])
+		return &types.CheckResult{
+			Success:      false,
+			StatusCode:   0,
+			ResponseTime: elapsed,
+			Error:        err.Error(),
 		}
-		state.Status = types.StatusUp
-		state.Message = fmt.Sprintf("MySQL %s 응답 정상", version)
-		state.ResponseTime = elapsed
-		return state
-	}
-
-	state.Status = types.StatusUp
-	state.Message = "MySQL 연결 정상"
-	state.ResponseTime = elapsed
-	return state
-}
-
-// checkPostgreSQL PostgreSQL 연결 확인
-func (c *Checker) checkPostgreSQL(ip string, port int, state types.ServiceState) types.ServiceState {
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), c.timeout)
-	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("PostgreSQL 연결 실패: %v", err)
-		state.ResponseTime = int(time.Since(start).Milliseconds())
-		return state
-	}
-	defer conn.Close()
-
-	// PostgreSQL 시작 메시지 전송 (SSLRequest)
-	conn.SetDeadline(time.Now().Add(c.timeout))
-	// SSLRequest: length(8) + SSL code(80877103)
-	sslRequest := []byte{0, 0, 0, 8, 4, 210, 22, 47}
-	_, err = conn.Write(sslRequest)
-	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("PostgreSQL 요청 실패: %v", err)
-		state.ResponseTime = int(time.Since(start).Milliseconds())
-		return state
-	}
-
-	// 응답 읽기 (S=SSL지원, N=SSL미지원, E=에러)
-	buf := make([]byte, 1)
-	_, err = conn.Read(buf)
-	elapsed := int(time.Since(start).Milliseconds())
-
-	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("PostgreSQL 응답 실패: %v", err)
-		state.ResponseTime = elapsed
-		return state
-	}
-
-	if buf[0] == 'S' || buf[0] == 'N' {
-		state.Status = types.StatusUp
-		state.Message = "PostgreSQL 응답 정상"
-		state.ResponseTime = elapsed
-		return state
-	}
-
-	state.Status = types.StatusUp
-	state.Message = "PostgreSQL 연결 정상"
-	state.ResponseTime = elapsed
-	return state
-}
-
-// checkMongoDB MongoDB 연결 확인
-func (c *Checker) checkMongoDB(ip string, port int, state types.ServiceState) types.ServiceState {
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), c.timeout)
-	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("MongoDB 연결 실패: %v", err)
-		state.ResponseTime = int(time.Since(start).Milliseconds())
-		return state
-	}
-	defer conn.Close()
-	elapsed := int(time.Since(start).Milliseconds())
-
-	// MongoDB는 복잡한 프로토콜이므로 TCP 연결 성공만 확인
-	state.Status = types.StatusUp
-	state.Message = "MongoDB 연결 정상"
-	state.ResponseTime = elapsed
-	return state
-}
-
-// checkTCPPort 단순 TCP 포트 연결 확인
-func (c *Checker) checkTCPPort(ip string, port int, state types.ServiceState) types.ServiceState {
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), c.timeout)
-	elapsed := int(time.Since(start).Milliseconds())
-
-	if err != nil {
-		state.Status = types.StatusDown
-		state.Message = fmt.Sprintf("포트 %d 연결 실패", port)
-		state.ResponseTime = elapsed
-		return state
 	}
 	conn.Close()
 
-	state.Status = types.StatusUp
-	state.Message = fmt.Sprintf("포트 %d 연결 정상", port)
-	state.ResponseTime = elapsed
-	return state
+	return &types.CheckResult{
+		Success:      true,
+		StatusCode:   200, // TCP 연결 성공
+		ResponseTime: elapsed,
+	}
 }
 
-// httpCheck HTTP 요청을 통해 상태를 확인하고 응답 시간을 반환
-// DOWN = 연결 실패 (timeout, connection refused)
-// UP = 2xx 응답
-// WARN = 4xx/5xx 응답 (서버는 응답함, 확인 필요)
-func (c *Checker) httpCheck(url string) (types.Status, string, int) {
-	status, msg, elapsed, _, _ := c.httpCheckWithSSL(url)
-	return status, msg, elapsed
+// checkWebResources 웹 리소스 체크 (raw 데이터, 모든 리소스)
+func (c *Checker) checkWebResources(ctx context.Context, cont dockertypes.Container) []types.ResourceCheck {
+	ip := c.getContainerIP(ctx, cont.ID)
+	port := c.getHTTPPort(cont)
+	protocol := "http"
+	if port == 443 {
+		protocol = "https"
+	}
+	pageURL := fmt.Sprintf("%s://%s:%d/", protocol, ip, port)
+
+	return c.fetchAndCheckResources(pageURL)
 }
 
-// httpCheckWithSSL HTTP 요청을 통해 상태를 확인하고 SSL 오류 정보도 반환
-func (c *Checker) httpCheckWithSSL(url string) (types.Status, string, int, bool, string) {
-	log.Printf("[DEBUG] HTTP check: %s", url)
-	var sslError bool
-	var sslMessage string
+// fetchAndCheckResources HTML에서 리소스 추출하고 체크
+func (c *Checker) fetchAndCheckResources(pageURL string) []types.ResourceCheck {
+	var results []types.ResourceCheck
 
-	// HTTPS URL인 경우 SSL 인증서 검증
-	if strings.HasPrefix(url, "https://") {
-		sslError, sslMessage = c.checkSSL(url)
-	}
-
-	// InsecureSkipVerify로 실제 서비스 상태 확인
-	client := &http.Client{
-		Timeout: c.timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-	start := time.Now()
-	resp, err := client.Get(url)
-	elapsed := int(time.Since(start).Milliseconds())
-
+	// 페이지 HTML 가져오기 (공유 HTTP 클라이언트 사용)
+	resp, err := c.httpClient.Get(pageURL)
 	if err != nil {
-		log.Printf("[DEBUG] HTTP failed: %s (%dms) - %v", url, elapsed, err)
-		return types.StatusDown, fmt.Sprintf("연결 실패: %v", err), elapsed, sslError, sslMessage
+		return results
 	}
 	defer resp.Body.Close()
 
-	statusCode := resp.StatusCode
-	log.Printf("[DEBUG] HTTP response: %s (%dms) - status %d", url, elapsed, statusCode)
-
-	// 2xx = 정상 (SSL 오류가 있으면 WARN)
-	if statusCode >= 200 && statusCode < 300 {
-		if sslError {
-			return types.StatusWarn, fmt.Sprintf("%d OK (SSL 오류)", statusCode), elapsed, sslError, sslMessage
-		}
-		return types.StatusUp, fmt.Sprintf("%d OK", statusCode), elapsed, sslError, sslMessage
-	}
-
-	// 401/403 = 인증 필요 (서버는 살아있음)
-	if statusCode == 401 || statusCode == 403 {
-		return types.StatusWarn, fmt.Sprintf("%d 인증필요", statusCode), elapsed, sslError, sslMessage
-	}
-
-	// 4xx/5xx = 서버 응답함, 확인 필요
-	return types.StatusWarn, fmt.Sprintf("%d %s", statusCode, resp.Status), elapsed, sslError, sslMessage
-}
-
-// checkSSL SSL 인증서 검증
-func (c *Checker) checkSSL(url string) (bool, string) {
-	client := &http.Client{
-		Timeout: c.timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
-		},
-	}
-
-	resp, err := client.Head(url)
+	// HTML 읽기 (최대 2MB)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		errStr := err.Error()
-		// SSL 인증서 관련 오류 감지
-		if strings.Contains(errStr, "certificate") ||
-			strings.Contains(errStr, "x509") ||
-			strings.Contains(errStr, "tls") ||
-			strings.Contains(errStr, "SSL") {
+		return results
+	}
+	htmlContent := string(body)
 
-			if strings.Contains(errStr, "expired") {
-				return true, "SSL 인증서 만료"
-			} else if strings.Contains(errStr, "self signed") || strings.Contains(errStr, "self-signed") {
-				return true, "자체 서명 인증서"
-			} else if strings.Contains(errStr, "unknown authority") {
-				return true, "신뢰할 수 없는 인증 기관"
-			} else if strings.Contains(errStr, "hostname") || strings.Contains(errStr, "doesn't match") {
-				return true, "SSL 인증서 도메인 불일치"
-			} else {
-				return true, "SSL 인증서 오류"
+	// 리소스 URL 추출 패턴
+	patterns := map[string]*regexp.Regexp{
+		"js":  regexp.MustCompile(`<script[^>]+src=["']([^"']+)["']`),
+		"css": regexp.MustCompile(`<link[^>]+href=["']([^"']+)["'][^>]*rel=["']stylesheet["']`),
+		"img": regexp.MustCompile(`<img[^>]+src=["']([^"']+)["']`),
+	}
+
+	baseURL, _ := url.Parse(pageURL)
+	checked := make(map[string]bool)
+
+	for resType, pattern := range patterns {
+		matches := pattern.FindAllStringSubmatch(htmlContent, -1)
+		for _, match := range matches {
+			if len(match) < 2 || match[1] == "" {
+				continue
 			}
+
+			resourceURL := html.UnescapeString(strings.TrimSpace(match[1]))
+
+			// 스킵할 URL
+			if strings.HasPrefix(resourceURL, "data:") || strings.HasPrefix(resourceURL, "blob:") {
+				continue
+			}
+
+			// 절대 경로로 변환
+			resourceURL = c.resolveURL(baseURL, resourceURL)
+
+			// 중복 체크
+			if checked[resourceURL] {
+				continue
+			}
+			checked[resourceURL] = true
+
+			// 리소스 상태 체크
+			statusCode := c.getResourceStatus(resourceURL, pageURL)
+			results = append(results, types.ResourceCheck{
+				URL:        resourceURL,
+				StatusCode: statusCode,
+				Type:       resType,
+			})
 		}
-		return false, ""
 	}
-	defer resp.Body.Close()
-	return false, ""
+
+	return results
+}
+
+// getResourceStatus 리소스 HTTP 상태 코드 확인 (개선된 버전)
+func (c *Checker) getResourceStatus(resourceURL, referer string) int {
+	req, err := http.NewRequest("GET", resourceURL, nil)
+	if err != nil {
+		return 0
+	}
+
+	// 실제 브라우저처럼 헤더 설정
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("Referer", referer)
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0 // 연결 실패
+	}
+	// Body를 완전히 읽어서 연결 재사용 가능하게 함
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	resp.Body.Close()
+
+	return resp.StatusCode
+}
+
+// resolveURL 상대 경로를 절대 경로로 변환
+func (c *Checker) resolveURL(base *url.URL, ref string) string {
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return ref
+	}
+	if strings.HasPrefix(ref, "//") {
+		return base.Scheme + ":" + ref
+	}
+	refURL, err := url.Parse(ref)
+	if err != nil {
+		return ref
+	}
+	return base.ResolveReference(refURL).String()
 }
 
 func (c *Checker) getContainerIP(ctx context.Context, containerID string) string {
@@ -1250,241 +941,4 @@ func (c *Checker) getHTTPPort(cont dockertypes.Container) int {
 		return int(cont.Ports[0].PrivatePort)
 	}
 	return 8080
-}
-
-// checkWebResourcesStable 리소스 에러 상태를 안정화하여 반환
-// 에러가 발생하면 즉시 반영하지만, 복구는 3회 연속 정상이어야 반영
-func (c *Checker) checkWebResourcesStable(serviceID, pageURL string) []types.ResourceError {
-	currentErrors := c.checkWebResources(pageURL)
-
-	// 캐시 확인
-	cached, exists := c.resourceErrorCache[serviceID]
-
-	if len(currentErrors) > 0 {
-		// 에러 발견 → 즉시 캐시 업데이트하고 반환
-		c.resourceErrorCache[serviceID] = &resourceErrorState{
-			errors:        currentErrors,
-			consecutiveOK: 0,
-			lastCheckedAt: time.Now(),
-		}
-		return currentErrors
-	}
-
-	// 현재는 정상
-	if !exists || len(cached.errors) == 0 {
-		// 이전에도 정상이었으면 그냥 빈 배열 반환
-		return nil
-	}
-
-	// 이전에 에러가 있었고 현재는 정상
-	cached.consecutiveOK++
-	cached.lastCheckedAt = time.Now()
-
-	// 3회 연속 정상이면 복구로 처리
-	if cached.consecutiveOK >= 3 {
-		log.Printf("[INFO] %s: resource errors cleared after 3 consecutive OK checks", serviceID)
-		delete(c.resourceErrorCache, serviceID)
-		return nil
-	}
-
-	// 아직 안정화 안됨 - 이전 에러 유지
-	log.Printf("[DEBUG] %s: waiting for stable recovery (%d/3 OK)", serviceID, cached.consecutiveOK)
-	return cached.errors
-}
-
-// checkWebResources 웹 페이지 진입 시 모든 네트워크 리소스 상태 체크
-// Chrome이 있으면 실제 브라우저로 모든 네트워크 요청 캡처
-// Chrome이 없으면 HTML 파싱으로 fallback
-func (c *Checker) checkWebResources(pageURL string) []types.ResourceError {
-	// Chrome이 설치되어 있으면 브라우저 기반 체크
-	if c.browserChecker != nil && c.browserChecker.IsAvailable() {
-		errors, err := c.browserChecker.CheckPageResources(pageURL)
-		if err != nil {
-			log.Printf("[WARN] Browser check failed, falling back to HTML parsing: %v", err)
-			return c.checkWebResourcesFallback(pageURL)
-		}
-		return errors
-	}
-
-	// Chrome이 없으면 HTML 파싱 fallback
-	return c.checkWebResourcesFallback(pageURL)
-}
-
-// checkWebResourcesFallback HTML 파싱 기반 리소스 체크 (Chrome 없을 때 사용)
-func (c *Checker) checkWebResourcesFallback(pageURL string) []types.ResourceError {
-	var errors []types.ResourceError
-
-	client := &http.Client{
-		Timeout: c.timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-
-	// 페이지 HTML 가져오기
-	resp, err := client.Get(pageURL)
-	if err != nil {
-		return errors
-	}
-	defer resp.Body.Close()
-
-	// HTML 읽기 (최대 2MB)
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
-	if err != nil {
-		return errors
-	}
-	html := string(body)
-
-	// 모든 네트워크 리소스 URL 추출 패턴
-	patterns := map[string]*regexp.Regexp{
-		// JavaScript
-		"js": regexp.MustCompile(`<script[^>]+src=["']([^"']+)["']`),
-		// CSS (stylesheet)
-		"css": regexp.MustCompile(`<link[^>]+href=["']([^"']+)["'][^>]*rel=["']stylesheet["']|<link[^>]+rel=["']stylesheet["'][^>]*href=["']([^"']+)["']`),
-		// 이미지
-		"img": regexp.MustCompile(`<img[^>]+src=["']([^"']+)["']`),
-		// srcset 이미지
-		"img-srcset": regexp.MustCompile(`srcset=["']([^"']+)["']`),
-		// 폰트/아이콘 (preload, prefetch)
-		"font": regexp.MustCompile(`<link[^>]+href=["']([^"']+\.(woff2?|ttf|eot|otf)[^"']*)["']`),
-		// Favicon, 아이콘
-		"icon": regexp.MustCompile(`<link[^>]+href=["']([^"']+)["'][^>]*rel=["'](icon|shortcut icon|apple-touch-icon)["']|<link[^>]+rel=["'](icon|shortcut icon|apple-touch-icon)["'][^>]*href=["']([^"']+)["']`),
-		// 비디오
-		"video": regexp.MustCompile(`<video[^>]+src=["']([^"']+)["']|<source[^>]+src=["']([^"']+)["']`),
-		// 오디오
-		"audio": regexp.MustCompile(`<audio[^>]+src=["']([^"']+)["']`),
-		// iframe
-		"iframe": regexp.MustCompile(`<iframe[^>]+src=["']([^"']+)["']`),
-		// object/embed
-		"embed": regexp.MustCompile(`<(?:object|embed)[^>]+(?:src|data)=["']([^"']+)["']`),
-		// background-image in style
-		"bg-img": regexp.MustCompile(`url\(["']?([^"')]+)["']?\)`),
-		// preload/prefetch resources
-		"preload": regexp.MustCompile(`<link[^>]+href=["']([^"']+)["'][^>]*rel=["'](?:preload|prefetch)["']|<link[^>]+rel=["'](?:preload|prefetch)["'][^>]*href=["']([^"']+)["']`),
-		// manifest
-		"manifest": regexp.MustCompile(`<link[^>]+href=["']([^"']+)["'][^>]*rel=["']manifest["']`),
-	}
-
-	baseURL, _ := url.Parse(pageURL)
-	checked := make(map[string]bool) // 중복 체크 방지
-
-	for resType, pattern := range patterns {
-		matches := pattern.FindAllStringSubmatch(html, -1)
-		for _, match := range matches {
-			// 매칭된 그룹들 중 비어있지 않은 URL 찾기
-			for i := 1; i < len(match); i++ {
-				resourceURL := strings.TrimSpace(match[i])
-				if resourceURL == "" {
-					continue
-				}
-
-				// srcset인 경우 여러 URL 파싱
-				if resType == "img-srcset" {
-					srcsetURLs := c.parseSrcset(resourceURL)
-					for _, srcURL := range srcsetURLs {
-						c.checkAndAddError(srcURL, "img", baseURL, checked, &errors)
-					}
-					continue
-				}
-
-				c.checkAndAddError(resourceURL, resType, baseURL, checked, &errors)
-			}
-		}
-	}
-
-	return errors
-}
-
-// parseSrcset srcset 속성에서 URL들을 추출
-func (c *Checker) parseSrcset(srcset string) []string {
-	var urls []string
-	// srcset 형식: "url1 1x, url2 2x" 또는 "url1 100w, url2 200w"
-	parts := strings.Split(srcset, ",")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		// 공백으로 분리하여 첫 번째가 URL
-		fields := strings.Fields(part)
-		if len(fields) > 0 {
-			urls = append(urls, fields[0])
-		}
-	}
-	return urls
-}
-
-// checkAndAddError 리소스 URL 체크 후 에러 추가
-func (c *Checker) checkAndAddError(resourceURL, resType string, baseURL *url.URL, checked map[string]bool, errors *[]types.ResourceError) {
-	// HTML 엔티티 디코딩 (&amp; -> &, &lt; -> < 등)
-	resourceURL = html.UnescapeString(resourceURL)
-
-	// 스킵할 URL 패턴
-	if strings.HasPrefix(resourceURL, "data:") ||
-		strings.HasPrefix(resourceURL, "blob:") ||
-		strings.HasPrefix(resourceURL, "javascript:") ||
-		strings.HasPrefix(resourceURL, "mailto:") ||
-		strings.HasPrefix(resourceURL, "#") {
-		return
-	}
-
-	// 상대 경로를 절대 경로로 변환
-	resourceURL = c.resolveURL(baseURL, resourceURL)
-
-	// 중복 체크
-	if checked[resourceURL] {
-		return
-	}
-	checked[resourceURL] = true
-
-	// 리소스 상태 체크 (HEAD 요청)
-	statusCode := c.checkResourceStatus(resourceURL)
-	if statusCode >= 400 {
-		*errors = append(*errors, types.ResourceError{
-			URL:        resourceURL,
-			StatusCode: statusCode,
-			Type:       resType,
-		})
-		log.Printf("[WARN] Resource error: %s %d (%s)", resType, statusCode, resourceURL)
-	}
-}
-
-// resolveURL 상대 경로를 절대 경로로 변환
-func (c *Checker) resolveURL(base *url.URL, ref string) string {
-	// 이미 절대 URL인 경우
-	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
-		return ref
-	}
-	// //로 시작하는 경우 (프로토콜 상대 URL)
-	if strings.HasPrefix(ref, "//") {
-		return base.Scheme + ":" + ref
-	}
-	// 상대 경로
-	refURL, err := url.Parse(ref)
-	if err != nil {
-		return ref
-	}
-	return base.ResolveReference(refURL).String()
-}
-
-// checkResourceStatus 리소스 URL의 HTTP 상태 코드 확인
-func (c *Checker) checkResourceStatus(resourceURL string) int {
-	client := &http.Client{
-		Timeout: 3 * time.Second, // 리소스는 빠르게 체크
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-
-	req, err := http.NewRequest("HEAD", resourceURL, nil)
-	if err != nil {
-		return 0
-	}
-	req.Header.Set("User-Agent", "HealthAgent/1.0")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		// 연결 실패는 500으로 처리
-		return 500
-	}
-	defer resp.Body.Close()
-
-	return resp.StatusCode
 }

@@ -20,7 +20,7 @@ import (
 	"health-agent/internal/wsclient"
 )
 
-const version = "1.25.0"
+const version = "2.0.0" // Raw data 전송으로 리팩토링
 
 const serviceFile = `[Unit]
 Description=Health Agent - Service Health Check Agent
@@ -838,15 +838,24 @@ func (a *Agent) check(ctx context.Context) {
 
 func (a *Agent) handleStateChange(current types.ServiceState) {
 	prev, exists := a.states[current.ID]
-
 	a.states[current.ID] = &current
 
 	if !exists {
 		return
 	}
 
-	if prev.Status != current.Status {
-		log.Printf("[ALERT] %s: %s -> %s", current.Name, prev.Status, current.Status)
+	// 컨테이너 상태 변경 로깅
+	if prev.ContainerState != current.ContainerState {
+		log.Printf("[INFO] %s: container state changed %s -> %s",
+			current.Name, prev.ContainerState, current.ContainerState)
+	}
+
+	// HTTP 체크 결과 변경 로깅
+	if current.HttpCheck != nil && prev.HttpCheck != nil {
+		if prev.HttpCheck.Success != current.HttpCheck.Success {
+			log.Printf("[INFO] %s: HTTP check %v -> %v",
+				current.Name, prev.HttpCheck.Success, current.HttpCheck.Success)
+		}
 	}
 }
 
@@ -893,27 +902,31 @@ func (a *Agent) printSummary() {
 	fmt.Println("\nSummary:")
 	fmt.Println("------------------------------------------")
 
-	up, down, warn := 0, 0, 0
+	running, stopped, httpOK := 0, 0, 0
 	for _, state := range a.states {
-		switch state.Status {
-		case types.StatusUp:
-			up++
-		case types.StatusDown:
-			down++
-		case types.StatusWarn:
-			warn++
+		if state.ContainerState == "running" {
+			running++
+		} else {
+			stopped++
 		}
 
-		statusMark := "[UP]"
-		if state.Status == types.StatusDown {
-			statusMark = "[DOWN]"
-		} else if state.Status == types.StatusWarn {
-			statusMark = "[WARN]"
+		if state.HttpCheck != nil && state.HttpCheck.Success {
+			httpOK++
 		}
 
-		fmt.Printf("%s %-25s %s %s\n", statusMark, state.Name, state.Type, state.Message)
+		statusMark := "[RUNNING]"
+		if state.ContainerState != "running" {
+			statusMark = "[STOPPED]"
+		}
+
+		httpStatus := ""
+		if state.HttpCheck != nil {
+			httpStatus = fmt.Sprintf("HTTP:%d/%dms", state.HttpCheck.StatusCode, state.HttpCheck.ResponseTime)
+		}
+
+		fmt.Printf("%s %-25s %s %s\n", statusMark, state.Name, state.Type, httpStatus)
 	}
 
 	fmt.Println("------------------------------------------")
-	fmt.Printf("Total %d | UP: %d | DOWN: %d | WARN: %d\n", len(a.states), up, down, warn)
+	fmt.Printf("Total %d | Running: %d | Stopped: %d | HTTP OK: %d\n", len(a.states), running, stopped, httpOK)
 }
