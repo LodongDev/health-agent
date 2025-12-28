@@ -95,6 +95,13 @@ type ResourceCheck struct {
 	Type       string `json:"type"`       // js, css, img 등
 }
 
+// ResourceError 리소스 에러 (브라우저 체크용)
+type ResourceError struct {
+	URL        string `json:"url"`
+	StatusCode int    `json:"statusCode"`
+	Type       string `json:"type"`
+}
+
 // AgentReport 에이전트 보고서
 type AgentReport struct {
 	AgentID   string         `json:"agentId"`

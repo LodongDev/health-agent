@@ -225,7 +225,7 @@ func (c *Checker) CheckRedis() *types.ServiceState {
 	// RESP 프로토콜로 PING 전송
 	conn.Write([]byte("*1\r\n$4\r\nPING\r\n"))
 	buf := make([]byte, 128)
-	n, _ := conn.Read(buf)
+	_, _ = conn.Read(buf)
 	conn.Close()
 	elapsed := int(time.Since(start).Milliseconds())
 
