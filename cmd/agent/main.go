@@ -20,7 +20,7 @@ import (
 	"health-agent/internal/wsclient"
 )
 
-const version = "1.21.0"
+const version = "1.22.0"
 
 const serviceFile = `[Unit]
 Description=Health Agent - Service Health Check Agent
@@ -128,7 +128,7 @@ func printUsage() {
 	fmt.Println("  health-agent ignore add \"*test*\"     # Contains test")
 	fmt.Println("  health-agent ignore list             # Show ignore list")
 	fmt.Println("  health-agent logs                    # Show last 50 lines")
-	fmt.Println("  health-agent logs -f                 # Follow logs")
+	fmt.Println("  health-agent logs -f/-t              # Follow logs (real-time)")
 }
 
 func cmdLogs() {
@@ -142,7 +142,7 @@ func cmdLogs() {
 
 	for i := 2; i < len(os.Args); i++ {
 		switch os.Args[i] {
-		case "-f", "--follow":
+		case "-f", "--follow", "-t", "--tail":
 			follow = true
 		case "-n":
 			if i+1 < len(os.Args) {
