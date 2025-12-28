@@ -20,7 +20,7 @@ import (
 	"health-agent/internal/wsclient"
 )
 
-const version = "1.23.0"
+const version = "1.24.0"
 
 const serviceFile = `[Unit]
 Description=Health Agent - Service Health Check Agent
@@ -129,6 +129,10 @@ func printUsage() {
 	fmt.Println("  health-agent ignore list             # Show ignore list")
 	fmt.Println("  health-agent logs                    # Show last 50 lines")
 	fmt.Println("  health-agent logs -f/-t              # Follow logs (real-time)")
+	fmt.Println("  health-agent logs --os               # OS service logs only")
+	fmt.Println("  health-agent logs --docker           # Docker container logs only")
+	fmt.Println("  health-agent logs --error            # Errors/warnings only")
+	fmt.Println("  health-agent logs -g 'pattern'       # Custom grep filter")
 }
 
 func cmdLogs() {
@@ -139,6 +143,7 @@ func cmdLogs() {
 
 	follow := false
 	lines := "50"
+	grepPattern := ""
 
 	for i := 2; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -149,25 +154,53 @@ func cmdLogs() {
 				lines = os.Args[i+1]
 				i++
 			}
+		case "-g", "--grep":
+			if i+1 < len(os.Args) {
+				grepPattern = os.Args[i+1]
+				i++
+			}
+		case "--os":
+			// OS 서비스 관련 로그만 필터
+			grepPattern = "Checking OS|systemctl|Nginx|HTTPD|nginx|httpd"
+		case "--docker":
+			// Docker 컨테이너 관련 로그만 필터
+			grepPattern = "Container|Docker|docker"
+		case "--error", "--warn":
+			// 에러/경고만 필터
+			grepPattern = "ERROR|WARN|error|warn"
 		}
 	}
 
+	// Ctrl+C 시그널 처리
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
 	var cmd *exec.Cmd
-	if follow {
-		fmt.Println("Showing logs (Ctrl+C to exit)...")
-		fmt.Println("─────────────────────────────────")
-		cmd = exec.Command("journalctl", "-u", "health-agent", "-f", "-n", lines, "--no-pager")
+	if grepPattern != "" {
+		// grep 필터 사용
+		if follow {
+			fmt.Printf("Showing logs with filter: %s (Ctrl+C to exit)...\n", grepPattern)
+			fmt.Println("─────────────────────────────────")
+			// journalctl -f | grep -E pattern
+			cmd = exec.Command("bash", "-c",
+				fmt.Sprintf("journalctl -u health-agent -f -n %s --no-pager | grep -E '%s'", lines, grepPattern))
+		} else {
+			cmd = exec.Command("bash", "-c",
+				fmt.Sprintf("journalctl -u health-agent -n %s --no-pager | grep -E '%s'", lines, grepPattern))
+		}
 	} else {
-		cmd = exec.Command("journalctl", "-u", "health-agent", "-n", lines, "--no-pager")
+		if follow {
+			fmt.Println("Showing logs (Ctrl+C to exit)...")
+			fmt.Println("─────────────────────────────────")
+			cmd = exec.Command("journalctl", "-u", "health-agent", "-f", "-n", lines, "--no-pager")
+		} else {
+			cmd = exec.Command("journalctl", "-u", "health-agent", "-n", lines, "--no-pager")
+		}
 	}
 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-
-	// Ctrl+C 시그널 처리
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		<-sigChan
