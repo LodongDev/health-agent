@@ -3,6 +3,7 @@ package oscheck
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -356,8 +357,22 @@ func (c *Checker) findExecutable(names ...string) string {
 
 // isSystemctlActive systemctl로 서비스 활성 상태 확인
 func (c *Checker) isSystemctlActive(serviceName string) bool {
-	cmd := exec.Command("systemctl", "is-active", "--quiet", serviceName)
-	return cmd.Run() == nil
+	// 먼저 systemctl is-active 시도
+	cmd := exec.Command("systemctl", "is-active", serviceName)
+	output, err := cmd.Output()
+	if err == nil {
+		status := strings.TrimSpace(string(output))
+		log.Printf("[DEBUG] systemctl is-active %s: %s", serviceName, status)
+		return status == "active"
+	}
+
+	// 실패시 systemctl status로 확인
+	cmd = exec.Command("systemctl", "status", serviceName)
+	output, _ = cmd.CombinedOutput()
+	outputStr := string(output)
+	isActive := strings.Contains(outputStr, "Active: active")
+	log.Printf("[DEBUG] systemctl status %s: active=%v", serviceName, isActive)
+	return isActive
 }
 
 // getSystemctlServiceNames 서비스에 해당하는 systemctl 서비스명 목록 반환
@@ -377,11 +392,15 @@ func (c *Checker) CheckNginx() *types.ServiceState {
 	// systemctl로 서비스 상태 먼저 확인
 	isActive := c.isSystemctlActive("nginx")
 	port, configPath := c.getNginxPortAndPath()
+	execPath := c.findExecutable("nginx")
+
+	log.Printf("[DEBUG] Nginx check: isActive=%v, port=%d, config=%s, exec=%s", isActive, port, configPath, execPath)
 
 	// 서비스가 활성화되지 않았고 포트도 없으면 설치되지 않은 것으로 간주
 	if !isActive && port == 0 {
 		// nginx 실행 파일도 없으면 nil
-		if c.findExecutable("nginx") == "" {
+		if execPath == "" {
+			log.Printf("[DEBUG] Nginx not found (no systemctl, no port, no executable)")
 			return nil
 		}
 	}
@@ -395,7 +414,7 @@ func (c *Checker) CheckNginx() *types.ServiceState {
 		ID: "os-nginx", Name: "Nginx (OS)", Type: types.TypeWebNginx,
 		Host: "localhost", Port: port, CheckedAt: time.Now(),
 		ConfigPath: configPath,
-		Path:       c.findExecutable("nginx"),
+		Path:       execPath,
 	}
 	start := time.Now()
 
@@ -468,13 +487,20 @@ func (c *Checker) parseNginxListenPort(path string) int {
 // CheckHTTPD Apache HTTPD 웹 서버 체크
 func (c *Checker) CheckHTTPD() *types.ServiceState {
 	// systemctl로 서비스 상태 먼저 확인 (httpd 또는 apache2)
-	isActive := c.isSystemctlActive("httpd") || c.isSystemctlActive("apache2")
+	isActiveHttpd := c.isSystemctlActive("httpd")
+	isActiveApache2 := c.isSystemctlActive("apache2")
+	isActive := isActiveHttpd || isActiveApache2
 	port, configPath := c.getHTTPDPortAndPath()
+	execPath := c.findExecutable("httpd", "apache2")
+
+	log.Printf("[DEBUG] HTTPD check: isActive(httpd=%v,apache2=%v), port=%d, config=%s, exec=%s",
+		isActiveHttpd, isActiveApache2, port, configPath, execPath)
 
 	// 서비스가 활성화되지 않았고 포트도 없으면 설치되지 않은 것으로 간주
 	if !isActive && port == 0 {
 		// httpd/apache2 실행 파일도 없으면 nil
-		if c.findExecutable("httpd", "apache2") == "" {
+		if execPath == "" {
+			log.Printf("[DEBUG] HTTPD not found (no systemctl, no port, no executable)")
 			return nil
 		}
 	}
@@ -488,7 +514,7 @@ func (c *Checker) CheckHTTPD() *types.ServiceState {
 		ID: "os-httpd", Name: "Apache HTTPD (OS)", Type: types.TypeWebApache,
 		Host: "localhost", Port: port, CheckedAt: time.Now(),
 		ConfigPath: configPath,
-		Path:       c.findExecutable("httpd", "apache2"),
+		Path:       execPath,
 	}
 	start := time.Now()
 
