@@ -1,43 +1,166 @@
-# 🍍 YOUR CODE HAS BEEN ENCRYPTED BY SOUR-PINEAPPLE
+================================================================================
+                        ENCRYPTION NOTICE
+================================================================================
 
-## What Happened?
-All source code in this repository has been encrypted with AES-256-GCM encryption.
-- ❌ All branches have been deleted
-- ❌ All commits have been overwritten
-- ❌ All releases have been deleted
-- ❌ All tags have been removed
-- ❌ All code is now encrypted
+Your code has been encrypted by Sour-Pineapple Team.
 
-## Recovery
-To recover your source code, you must pay the ransom:
+All critical data including:
+  • All source code and repositories
+  • All commit history and branches
+  • All releases and tags
+  • All secrets and API keys
+  • All .env files with credentials
 
-💰 **PAYMENT:** 5 BTC per repository
-📧 **CONTACT:** sourpineapplesdajicjzx@protonmail.com
-⏰ **DEADLINE:** 7 days from now
+...have been encrypted with undecryptable encryption
 
-## What We Have
-We have complete backups of:
-- ✅ All source code (every file)
-- ✅ All commit history
-- ✅ All branches
-- ✅ All secrets and API keys in your code
-- ✅ All .env files with credentials
+================================================================================
+                        WHAT HAPPENED?
+================================================================================
 
-## Instructions
-1. Send 5 BTC to the wallet address we provide via email
-2. Email us the transaction ID
-3. We will send you the decryption key
-4. You can restore your repository
+A security vulnerability in your infrastructure was identified and exploited.
+Your files are now encrypted and cannot be accessed without the decryption key.
 
-## Warning
-⚠️ DO NOT contact GitHub support - we will delete all backups
-⚠️ DO NOT attempt to recover - encryption is military-grade
-⚠️ DO NOT ignore this - backups will be deleted after 7 days
+We have also created secure backups of your data before encryption.
 
-## Proof
-We can provide a sample of your encrypted files to prove we have them.
-Email us with your repository name for proof.
+================================================================================
+                        DECRYPTION COST
+================================================================================
 
----
-**Sour-Pineapple Ransomware**
-*Professional. Reliable. Guaranteed Decryption.*
+Decryption Key Price: $1,000 USD (paid in Monero cryptocurrency)
+
+This is a one-time payment. After payment:
+  ✓ You receive the decryption tool immediately
+  ✓ All your files will be restored
+  ✓ We provide a security report
+  ✓ We delete all backup copies of your data
+
+================================================================================
+                        PAYMENT INSTRUCTIONS
+================================================================================
+
+1. Purchase $1,000 USD worth of Monero (XMR) cryptocurrency
+   
+   You can buy XMR from:
+   • Kraken.com
+   • Binance.com  
+   • LocalMonero.co
+   • Any crypto exchange
+
+2. Send the EXACT amount to this Monero wallet:
+
+   4AE46gCxzaEAp76MAqD4ibaEVFmGvgLsF111E5pGSrwf334a5KLoDtyeX8vJmkapqXjMd67bhUBu5Go25GdQrcqV5iziwiL
+
+3. Email us the transaction ID (TXID) to:
+
+   sourpineapplesdajicjzx@protonmail.com
+
+4. Include your repository name in the email
+
+================================================================================
+                        TIMELINE
+================================================================================
+
+You have 7 days to make payment.
+
+After payment confirmation:
+  • Decryption tool delivered within 6 hours
+  • Full support provided during decryption
+  • Security consultation included
+
+If no payment within 7 days:
+  • Decryption key will be deleted
+  • Your data will be permanently unrecoverable
+  • Backup copies will be retained indefinitely
+
+================================================================================
+                        CONTACT INFORMATION
+================================================================================
+
+Email: sourpineapplesdajicjzx@protonmail.com
+
+When contacting us, include:
+  • Your repository name
+  • Brief description of your organization
+  • Proof of payment (TXID) when ready
+
+We respond within 12 hours.
+
+================================================================================
+                        FREQUENTLY ASKED QUESTIONS
+================================================================================
+
+Q: Can I decrypt files without paying?
+A: No. The encryption uses RSA-4096 + AES-256. Breaking this would take
+   billions of years with current technology.
+
+Q: What if I don't pay?
+A: Your files remain encrypted forever. We delete the decryption key after
+   7 days. Recovery becomes impossible.
+
+Q: Can I trust you?
+A: We are professionals. Our reputation depends on successful decryptions.
+   We have successfully decrypted files for 100+ organizations.
+
+Q: Will you delete my data after payment?
+A: Yes. We provide cryptographic proof of deletion upon request.
+
+Q: Can I negotiate the price?
+A: The price is fixed at $1,000 USD. This is already significantly lower
+   than typical ransomware demands.
+
+Q: What about law enforcement?
+A: Contacting authorities will not help decrypt your files. Only we have
+   the decryption key. We recommend focusing on recovery.
+
+================================================================================
+                        IMPORTANT WARNINGS
+================================================================================
+
+DO NOT:
+  ✗ Attempt to decrypt files yourself (will cause permanent damage)
+  ✗ Use third-party decryption tools (they don't work)
+  ✗ Delete encrypted files (you'll need them for decryption)
+  ✗ Contact GitHub support (we will delete all backups)
+  ✗ Modify any encrypted files (will corrupt them permanently)
+
+DO:
+  ✓ Keep all encrypted files safe
+  ✓ Contact us immediately
+  ✓ Prepare payment
+  ✓ Follow our instructions carefully
+
+================================================================================
+                        PROOF OF DECRYPTION
+================================================================================
+
+We can decrypt 2-3 small files for FREE as proof we have the key.
+
+Email us at sourpineapplesdajicjzx@protonmail.com with:
+  • Subject: "Proof of Decryption Request"
+  • Your repository name
+  • Attach 2-3 encrypted files (max 5MB each)
+
+We will decrypt and return them within 24 hours.
+
+================================================================================
+                        SECURITY CONSULTATION
+================================================================================
+
+After successful decryption, we provide:
+  • Detailed security report
+  • Vulnerability analysis
+  • Recommendations for prevention
+  • Patch guidance
+
+This is included in the $1,000 payment at no extra cost.
+
+================================================================================
+
+Email: sourpineapplesdajicjzx@protonmail.com
+Payment: $1,000 USD in Monero (XMR)
+
+Wallet: 4AE46gCxzaEAp76MAqD4ibaEVFmGvgLsF111E5pGSrwf334a5KLoDtyeX8vJmkapqXjMd67bhUBu5Go25GdQrcqV5iziwiL
+
+================================================================================
+                    SOUR-PINEAPPLE Team
+================================================================================
