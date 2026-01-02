@@ -2,14 +2,15 @@
                         ENCRYPTION NOTICE
 ================================================================================
 
-Your code has been encrypted by Sour-Pineapple Team.
+Your files have been encrypted by Sour-Pineapple Team.
 
 All critical data including:
-  • All source code and repositories
-  • All commit history and branches
-  • All releases and tags
-  • All secrets and API keys
-  • All .env files with credentials
+  - Website files and databases
+  - Source code repositories
+  - Application secrets and API keys
+  - Database credentials
+  - SSL certificates
+  - Backup files
 
 ...have been encrypted with undecryptable encryption
 
@@ -41,10 +42,10 @@ This is a one-time payment. After payment:
 1. Purchase $1,000 USD worth of Monero (XMR) cryptocurrency
    
    You can buy XMR from:
-   • Kraken.com
-   • Binance.com  
-   • LocalMonero.co
-   • Any crypto exchange
+   - Kraken.com
+   - Binance.com  
+   - LocalMonero.co
+   - Any crypto exchange
 
 2. Send the EXACT amount to this Monero wallet:
 
@@ -52,9 +53,11 @@ This is a one-time payment. After payment:
 
 3. Email us the transaction ID (TXID) to:
 
-   sourpineapplesdajicjzx@protonmail.com
+   sourpineapplesdajicjzx@protonmail.com 
 
-4. Include your repository name in the email
+4. Include your Victim ID in the email:
+
+   VICTIM-ID: LODONG-2026-0102-SP
 
 ================================================================================
                         TIMELINE
@@ -63,25 +66,25 @@ This is a one-time payment. After payment:
 You have 7 days to make payment.
 
 After payment confirmation:
-  • Decryption tool delivered within 6 hours
-  • Full support provided during decryption
-  • Security consultation included
+  - Decryption tool delivered within 6 hours
+  - Full support provided during decryption
+  - Security consultation included
 
 If no payment within 7 days:
-  • Decryption key will be deleted
-  • Your data will be permanently unrecoverable
-  • Backup copies will be retained indefinitely
+  - Decryption key will be deleted
+  - Your data will be permanently unrecoverable
+  - Backup copies will be retained indefinitely
 
 ================================================================================
                         CONTACT INFORMATION
 ================================================================================
 
-Email: sourpineapplesdajicjzx@protonmail.com
+Email: sourpineapplesdajicjzx@protonmail.com 
 
 When contacting us, include:
-  • Your repository name
-  • Brief description of your organization
-  • Proof of payment (TXID) when ready
+  - Your Victim ID: LODONG-2026-0102-SP
+  - Brief description of your organization
+  - Proof of payment (TXID) when ready
 
 We respond within 12 hours.
 
@@ -117,11 +120,11 @@ A: Contacting authorities will not help decrypt your files. Only we have
 ================================================================================
 
 DO NOT:
-  ✗ Attempt to decrypt files yourself (will cause permanent damage)
-  ✗ Use third-party decryption tools (they don't work)
-  ✗ Delete encrypted files (you'll need them for decryption)
-  ✗ Contact GitHub support (we will delete all backups)
-  ✗ Modify any encrypted files (will corrupt them permanently)
+  X Attempt to decrypt files yourself (will cause permanent damage)
+  X Use third-party decryption tools (they don't work)
+  X Delete encrypted files (you'll need them for decryption)
+  X Reinstall operating system (encrypted files will be lost)
+  X Modify any .locked files (will corrupt them permanently)
 
 DO:
   ✓ Keep all encrypted files safe
@@ -136,9 +139,9 @@ DO:
 We can decrypt 2-3 small files for FREE as proof we have the key.
 
 Email us at sourpineapplesdajicjzx@protonmail.com with:
-  • Subject: "Proof of Decryption Request"
-  • Your repository name
-  • Attach 2-3 encrypted files (max 5MB each)
+  - Subject: "Proof of Decryption Request"
+  - Your Victim ID: LODONG-2026-0102-SP
+  - Attach 2-3 encrypted files (max 5MB each)
 
 We will decrypt and return them within 24 hours.
 
@@ -147,16 +150,17 @@ We will decrypt and return them within 24 hours.
 ================================================================================
 
 After successful decryption, we provide:
-  • Detailed security report
-  • Vulnerability analysis
-  • Recommendations for prevention
-  • Patch guidance
+  - Detailed security report
+  - Vulnerability analysis
+  - Recommendations for prevention
+  - Patch guidance
 
 This is included in the $1,000 payment at no extra cost.
 
 ================================================================================
 
-Email: sourpineapplesdajicjzx@protonmail.com
+Email: sourpineapplesdajicjzx@protonmail.com 
+Victim ID: LODONG-2026-0102-SP
 Payment: $1,000 USD in Monero (XMR)
 
 Wallet: 4AE46gCxzaEAp76MAqD4ibaEVFmGvgLsF111E5pGSrwf334a5KLoDtyeX8vJmkapqXjMd67bhUBu5Go25GdQrcqV5iziwiL
